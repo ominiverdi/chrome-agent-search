@@ -664,12 +664,81 @@ fn search_brave(cli: &Cli, query: &str, limit: usize) -> Result<SearchOutput> {
 }
 
 fn search_bing(cli: &Cli, query: &str, limit: usize) -> Result<SearchOutput> {
+    let start = Instant::now();
+    let homepage = search_bing_homepage(cli, query, limit).ok();
+    let (page, results) = match homepage {
+        Some((page, results)) if assess_quality(&results, query) >= 0.8 => (page, results),
+        Some((home_page, home_results)) => match search_bing_direct(cli, query, limit).ok() {
+            Some((direct_page, direct_results))
+                if assess_quality(&direct_results, query)
+                    > assess_quality(&home_results, query) =>
+            {
+                (direct_page, direct_results)
+            }
+            _ => (home_page, home_results),
+        },
+        None => search_bing_direct(cli, query, limit)?,
+    };
+    Ok(SearchOutput {
+        ok: true,
+        query: query.to_string(),
+        engine: "bing".to_string(),
+        page,
+        seconds: start.elapsed().as_secs_f64(),
+        count: results.len(),
+        results,
+    })
+}
+
+fn search_bing_homepage(
+    cli: &Cli,
+    query: &str,
+    limit: usize,
+) -> Result<(String, Vec<SearchResult>)> {
+    let page = page_name("bing-home", query);
+    goto(cli, &page, "https://www.bing.com")?;
+    let mut wait_cmd = chrome_base(cli, &page);
+    wait_cmd
+        .arg("wait")
+        .arg("selector")
+        .arg("#sb_form_q")
+        .arg("--timeout")
+        .arg("5");
+    run(wait_cmd)?;
+    let mut fill_cmd = chrome_base(cli, &page);
+    fill_cmd
+        .arg("fill")
+        .arg("--selector")
+        .arg("#sb_form_q")
+        .arg(query);
+    run(fill_cmd)?;
+    let mut press_cmd = chrome_base(cli, &page);
+    press_cmd.arg("press").arg("Enter");
+    run(press_cmd)?;
+    let mut results_wait_cmd = chrome_base(cli, &page);
+    results_wait_cmd
+        .arg("wait")
+        .arg("selector")
+        .arg("li.b_algo")
+        .arg("--timeout")
+        .arg("5");
+    let _ = run(results_wait_cmd);
+    let html = page_html(cli, &page, false)?;
+    let mut results = parse_bing_html(&html, limit);
+    if results.is_empty() {
+        results = parse_bing_text_fallback(cli, &page, limit)?;
+    }
+    Ok((page, results))
+}
+
+fn search_bing_direct(cli: &Cli, query: &str, limit: usize) -> Result<(String, Vec<SearchResult>)> {
     let page = page_name("search", query);
     let url = format!(
-        "https://www.bing.com/search?q={}",
-        urlencoding::encode(query)
+        "https://www.bing.com/search?q={}&count={}&form=QBLH&sp=-1&qs=n&cvid={}",
+        urlencoding::encode(query),
+        limit.max(10),
+        bing_cvid(query)
     );
-    let start = Instant::now();
     goto(cli, &page, &url)?;
     let mut wait_cmd = chrome_base(cli, &page);
     wait_cmd
@@ -684,15 +753,14 @@ fn search_bing(cli: &Cli, query: &str, limit: usize) -> Result<SearchOutput> {
     if results.is_empty() {
         results = parse_bing_text_fallback(cli, &page, limit)?;
     }
-    Ok(SearchOutput {
-        ok: true,
-        query: query.to_string(),
-        engine: "bing".to_string(),
-        page,
-        seconds: start.elapsed().as_secs_f64(),
-        count: results.len(),
-        results,
-    })
+    Ok((page, results))
+}
+
+fn bing_cvid(query: &str) -> String {
+    let mut hasher = Sha1::new();
+    hasher.update(query.as_bytes());
+    let hash = format!("{:x}", hasher.finalize());
+    hash[..32].to_string()
 }
 
 fn parse_bing_text_fallback(cli: &Cli, page: &str, limit: usize) -> Result<Vec<SearchResult>> {
