@@ -11,7 +11,8 @@ It is not a universal search ranking benchmark. Results depend on location, IP r
 cargo build --release
 ./target/release/chrome-agent-search bench \
   --cases benchmarks/cases.toml \
-  --out benchmarks/results/local.jsonl
+  --out benchmarks/results/local.jsonl \
+  --concurrency 3
 ```
 
 Use a specific engine:
@@ -25,7 +26,7 @@ Use a specific engine:
 Print machine-readable JSONL to stdout:
 
 ```sh
-./target/release/chrome-agent-search --json bench --cases benchmarks/cases.toml
+./target/release/chrome-agent-search --json bench --cases benchmarks/cases.toml --concurrency 3
 ```
 
 ## Case format

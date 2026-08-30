@@ -6,10 +6,11 @@ use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use std::fs;
 use std::process::Command;
+use std::thread;
 use std::time::Instant;
 use url::Url;
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[command(name = "chrome-agent-search")]
 #[command(about = "Search and read web pages through chrome-agent")]
 struct Cli {
@@ -29,7 +30,7 @@ struct Cli {
     json: bool,
 }
 
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand, Debug, Clone)]
 enum Commands {
     Read {
         url: String,
@@ -56,6 +57,8 @@ enum Commands {
         limit: usize,
         #[arg(long, default_value_t = 8000)]
         max_chars: usize,
+        #[arg(long, default_value_t = 3)]
+        concurrency: usize,
         #[arg(long, value_enum, default_value_t = Engine::Auto)]
         engine: Engine,
     },
@@ -64,6 +67,8 @@ enum Commands {
         cases: String,
         #[arg(long)]
         out: Option<String>,
+        #[arg(long, default_value_t = 3)]
+        concurrency: usize,
         #[arg(long, value_enum, default_value_t = Engine::Auto)]
         engine: Engine,
     },
@@ -195,64 +200,19 @@ fn main() -> Result<()> {
             query,
             limit,
             max_chars,
+            concurrency,
             engine,
         } => {
-            let search_out = search(&cli, query, *limit, *engine)?;
-            let mut results = Vec::new();
-            for item in search_out.results.into_iter().take(*limit) {
-                match read_url(&cli, &item.url, *max_chars) {
-                    Ok(read) => results.push(FullResult {
-                        title: item.title,
-                        url: item.url,
-                        snippet: item.snippet,
-                        fetch_status: "success".to_string(),
-                        content: Some(read.text),
-                        error: None,
-                    }),
-                    Err(err) => results.push(FullResult {
-                        title: item.title,
-                        url: item.url,
-                        snippet: item.snippet,
-                        fetch_status: "error".to_string(),
-                        content: None,
-                        error: Some(err.to_string()),
-                    }),
-                }
-            }
-            let out = FullOutput {
-                ok: true,
-                query: query.clone(),
-                engine: format!("{:?}", engine).to_lowercase(),
-                count: results.len(),
-                results,
-            };
-            if cli.json {
-                println!("{}", serde_json::to_string_pretty(&out)?);
-            } else {
-                println!(
-                    "Search completed for {:?} with {} results\n",
-                    out.query, out.count
-                );
-                for (idx, result) in out.results.iter().enumerate() {
-                    println!(
-                        "{}. {}\nURL: {}\nDescription: {}",
-                        idx + 1,
-                        result.title,
-                        result.url,
-                        result.snippet
-                    );
-                    match (&result.content, &result.error) {
-                        (Some(content), _) => println!("\nFull Content:\n{}\n---\n", content),
-                        (_, Some(error)) => {
-                            println!("\nContent Extraction Failed: {}\n---\n", error)
-                        }
-                        _ => println!("---\n"),
-                    }
-                }
-            }
+            let out = full_search(&cli, query, *limit, *max_chars, *engine, *concurrency)?;
+            print_full(&out, cli.json)?;
         }
-        Commands::Bench { cases, out, engine } => {
-            run_bench(&cli, cases, out.as_deref(), *engine)?;
+        Commands::Bench {
+            cases,
+            out,
+            concurrency,
+            engine,
+        } => {
+            run_bench(&cli, cases, out.as_deref(), *engine, *concurrency)?;
         }
     }
     Ok(())
@@ -352,6 +312,75 @@ fn text_url(cli: &Cli, url: &str, selector: &str, max_chars: usize) -> Result<Ti
         text_chars: text.len(),
         text,
     })
+}
+
+fn full_search(
+    cli: &Cli,
+    query: &str,
+    limit: usize,
+    max_chars: usize,
+    engine: Engine,
+    concurrency: usize,
+) -> Result<FullOutput> {
+    let search_out = search(cli, query, limit, engine)?;
+    let items: Vec<SearchResult> = search_out.results.into_iter().take(limit).collect();
+    let results = read_results_concurrently(cli, items, max_chars, concurrency.max(1));
+    Ok(FullOutput {
+        ok: true,
+        query: query.to_string(),
+        engine: search_out.engine,
+        count: results.len(),
+        results,
+    })
+}
+
+fn read_results_concurrently(
+    cli: &Cli,
+    items: Vec<SearchResult>,
+    max_chars: usize,
+    concurrency: usize,
+) -> Vec<FullResult> {
+    let mut out = Vec::with_capacity(items.len());
+    for chunk in items.chunks(concurrency) {
+        let mut handles = Vec::with_capacity(chunk.len());
+        for item in chunk.iter().cloned() {
+            let cli = cli.clone();
+            handles.push(thread::spawn(move || {
+                match read_url(&cli, &item.url, max_chars) {
+                    Ok(read) => FullResult {
+                        title: item.title,
+                        url: item.url,
+                        snippet: item.snippet,
+                        fetch_status: "success".to_string(),
+                        content: Some(read.text),
+                        error: None,
+                    },
+                    Err(err) => FullResult {
+                        title: item.title,
+                        url: item.url,
+                        snippet: item.snippet,
+                        fetch_status: "error".to_string(),
+                        content: None,
+                        error: Some(err.to_string()),
+                    },
+                }
+            }));
+        }
+        for handle in handles {
+            match handle.join() {
+                Ok(result) => out.push(result),
+                Err(_) => out.push(FullResult {
+                    title: "thread panic".to_string(),
+                    url: String::new(),
+                    snippet: String::new(),
+                    fetch_status: "error".to_string(),
+                    content: None,
+                    error: Some("reader thread panicked".to_string()),
+                }),
+            }
+        }
+    }
+    out
 }
 
 fn search(cli: &Cli, query: &str, limit: usize, engine: Engine) -> Result<SearchOutput> {
@@ -750,12 +779,18 @@ fn assess_quality(results: &[SearchResult], query: &str) -> f64 {
     total / total_weight
 }
 
-fn run_bench(cli: &Cli, cases_path: &str, out_path: Option<&str>, engine: Engine) -> Result<()> {
+fn run_bench(
+    cli: &Cli,
+    cases_path: &str,
+    out_path: Option<&str>,
+    engine: Engine,
+    concurrency: usize,
+) -> Result<()> {
     let text = fs::read_to_string(cases_path).with_context(|| format!("read {cases_path}"))?;
     let cases: BenchCases = toml::from_str(&text).with_context(|| format!("parse {cases_path}"))?;
     let mut records = Vec::new();
     for case in &cases.cases {
-        let record = run_bench_case(cli, case, engine);
+        let record = run_bench_case(cli, case, engine, concurrency);
         if !cli.json {
             println!(
                 "{} {} ok={} latency={:.3}s coverage={:.2}",
@@ -785,7 +820,7 @@ fn run_bench(cli: &Cli, cases_path: &str, out_path: Option<&str>, engine: Engine
     Ok(())
 }
 
-fn run_bench_case(cli: &Cli, case: &BenchCase, engine: Engine) -> BenchRecord {
+fn run_bench_case(cli: &Cli, case: &BenchCase, engine: Engine, concurrency: usize) -> BenchRecord {
     let start = Instant::now();
     match case.kind {
         BenchKind::Search => {
@@ -882,20 +917,25 @@ fn run_bench_case(cli: &Cli, case: &BenchCase, engine: Engine) -> BenchRecord {
                     );
                 }
             };
-            match search(cli, query, case.limit.unwrap_or(3), engine) {
+            match full_search(
+                cli,
+                query,
+                case.limit.unwrap_or(3),
+                case.max_chars.unwrap_or(8000),
+                engine,
+                concurrency,
+            ) {
                 Ok(out) => {
                     let mut combined = String::new();
                     let mut chars = 0;
                     for result in &out.results {
-                        if let Ok(read) = read_url(cli, &result.url, case.max_chars.unwrap_or(8000))
-                        {
-                            chars += read.text.len();
-                            combined.push_str(&read.text);
+                        if let Some(content) = &result.content {
+                            chars += content.len();
+                            combined.push_str(content);
                             combined.push('\n');
                         }
                     }
-                    let haystacks: Vec<String> =
-                        out.results.iter().map(search_result_text).collect();
+                    let haystacks: Vec<String> = out.results.iter().map(full_result_text).collect();
                     let coverage = keyword_coverage(&combined, case.keywords.as_deref());
                     BenchRecord {
                         case_id: case.id.clone(),
@@ -915,8 +955,11 @@ fn run_bench_case(cli: &Cli, case: &BenchCase, engine: Engine) -> BenchRecord {
                             .as_ref()
                             .map(|v| !v.is_empty())
                             .unwrap_or(false),
-                        expected_url_rank: rank_url(&out.results, case.expected_urls.as_deref()),
-                        expected_domain_rank: rank_domain(
+                        expected_url_rank: rank_url_full(
+                            &out.results,
+                            case.expected_urls.as_deref(),
+                        ),
+                        expected_domain_rank: rank_domain_full(
                             &out.results,
                             case.expected_domains.as_deref(),
                         ),
@@ -998,6 +1041,10 @@ fn search_result_text(result: &SearchResult) -> String {
     format!("{} {} {}", result.title, result.url, result.snippet)
 }
 
+fn full_result_text(result: &FullResult) -> String {
+    format!("{} {} {}", result.title, result.url, result.snippet)
+}
+
 fn keyword_coverage(text: &str, keywords: Option<&[String]>) -> f64 {
     let Some(keywords) = keywords else {
         return 1.0;
@@ -1022,6 +1069,22 @@ fn rank_url(results: &[SearchResult], expected: Option<&[String]>) -> Option<usi
 }
 
 fn rank_domain(results: &[SearchResult], expected: Option<&[String]>) -> Option<usize> {
+    let expected = expected?;
+    results
+        .iter()
+        .position(|r| expected.iter().any(|d| r.url.contains(d)))
+        .map(|idx| idx + 1)
+}
+
+fn rank_url_full(results: &[FullResult], expected: Option<&[String]>) -> Option<usize> {
+    let expected = expected?;
+    results
+        .iter()
+        .position(|r| expected.iter().any(|u| urls_match(&r.url, u)))
+        .map(|idx| idx + 1)
+}
+
+fn rank_domain_full(results: &[FullResult], expected: Option<&[String]>) -> Option<usize> {
     let expected = expected?;
     results
         .iter()
@@ -1068,6 +1131,32 @@ fn print_read(out: &TimedText, json: bool) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(out)?);
     } else {
         println!("{}", out.text);
+    }
+    Ok(())
+}
+
+fn print_full(out: &FullOutput, json: bool) -> Result<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(out)?);
+    } else {
+        println!(
+            "Search completed for {:?} with {} results\n",
+            out.query, out.count
+        );
+        for (idx, result) in out.results.iter().enumerate() {
+            println!(
+                "{}. {}\nURL: {}\nDescription: {}",
+                idx + 1,
+                result.title,
+                result.url,
+                result.snippet
+            );
+            match (&result.content, &result.error) {
+                (Some(content), _) => println!("\nFull Content:\n{}\n---\n", content),
+                (_, Some(error)) => println!("\nContent Extraction Failed: {}\n---\n", error),
+                _ => println!("---\n"),
+            }
+        }
     }
     Ok(())
 }

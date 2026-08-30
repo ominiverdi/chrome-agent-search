@@ -10,7 +10,7 @@ It is a pure command-line tool. No MCP server is embedded.
 - Extract visible text from a CSS selector.
 - Search with Bing, Brave, and DuckDuckGo Lite.
 - Auto-select the best search engine by result quality.
-- Fetch full content for search results.
+- Fetch full content for search results with bounded parallel reads.
 - Run local benchmark cases and emit JSONL metrics.
 
 ## Install
@@ -30,8 +30,8 @@ Requirements:
 chrome-agent-search read 'https://example.com/article'
 chrome-agent-search text 'https://example.com/page' --selector article
 chrome-agent-search search 'query' --limit 5
-chrome-agent-search full 'query' --limit 3 --max-chars 8000
-chrome-agent-search bench --cases benchmarks/cases.toml
+chrome-agent-search full 'query' --limit 3 --max-chars 8000 --concurrency 3
+chrome-agent-search bench --cases benchmarks/cases.toml --concurrency 3
 ```
 
 Use JSON output:
