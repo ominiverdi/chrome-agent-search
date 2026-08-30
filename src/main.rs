@@ -1,10 +1,13 @@
 use anyhow::{Context, Result, anyhow};
+use base64::Engine as Base64Engine;
 use clap::{Parser, Subcommand, ValueEnum};
+use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use std::fs;
 use std::process::Command;
 use std::time::Instant;
+use url::Url;
 
 #[derive(Parser, Debug)]
 #[command(name = "chrome-agent-search")]
@@ -300,6 +303,17 @@ fn goto(cli: &Cli, page: &str, url: &str) -> Result<(String, f64)> {
     Ok((text, start.elapsed().as_secs_f64()))
 }
 
+fn page_html(cli: &Cli, page: &str, stealth: bool) -> Result<String> {
+    let mut cmd = if stealth {
+        chrome_base_stealth(cli, page)
+    } else {
+        chrome_base(cli, page)
+    };
+    cmd.arg("eval").arg("document.documentElement.outerHTML");
+    let raw = run(cmd)?;
+    Ok(serde_json::from_str::<String>(&raw).unwrap_or(raw))
+}
+
 fn read_url(cli: &Cli, url: &str, max_chars: usize) -> Result<TimedText> {
     let page = page_name("read", url);
     let (_goto_text, goto_seconds) = goto(cli, &page, url)?;
@@ -366,6 +380,198 @@ fn search(cli: &Cli, query: &str, limit: usize, engine: Engine) -> Result<Search
     }
 }
 
+fn selector(css: &str) -> Selector {
+    Selector::parse(css).expect("valid selector")
+}
+
+fn clean_text(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn element_text(element: scraper::ElementRef<'_>) -> String {
+    clean_text(&element.text().collect::<Vec<_>>().join(" "))
+}
+
+fn clean_duckduckgo_url(href: &str) -> String {
+    let parsed = Url::parse(href)
+        .or_else(|_| Url::parse("https://duckduckgo.com").and_then(|base| base.join(href)));
+    parsed
+        .ok()
+        .and_then(|url| {
+            url.query_pairs()
+                .find(|(key, _)| key == "uddg")
+                .map(|(_, value)| value.into_owned())
+        })
+        .unwrap_or_else(|| href.to_string())
+}
+
+fn clean_bing_url(href: &str) -> String {
+    let Ok(url) = Url::parse(href) else {
+        return href.to_string();
+    };
+    if !url.host_str().unwrap_or_default().contains("bing.com") {
+        return href.to_string();
+    }
+    let Some(mut encoded) = url
+        .query_pairs()
+        .find(|(key, _)| key == "u")
+        .map(|(_, value)| value.into_owned())
+    else {
+        return href.to_string();
+    };
+    if let Some(stripped) = encoded.strip_prefix("a1") {
+        encoded = stripped.to_string();
+    }
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(encoded.as_bytes())
+        .or_else(|_| base64::engine::general_purpose::STANDARD.decode(encoded.as_bytes()))
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .unwrap_or_else(|| href.to_string())
+}
+
+fn parse_duckduckgo_lite_html(html: &str, limit: usize) -> Vec<SearchResult> {
+    let doc = Html::parse_document(html);
+    let link_sel = selector("a.result-link, .result__title a, a.result__a");
+    let tr_sel = selector("tr");
+    let rows: Vec<_> = doc.select(&tr_sel).collect();
+    let mut results = Vec::new();
+    for (idx, row) in rows.iter().enumerate() {
+        let Some(a) = row.select(&link_sel).next() else {
+            continue;
+        };
+        let title = element_text(a);
+        let href = a.value().attr("href").unwrap_or_default();
+        let url = clean_duckduckgo_url(href);
+        if title.is_empty() || url.contains("duckduckgo.com") {
+            continue;
+        }
+        let mut snippet = String::new();
+        for next_row in rows.iter().skip(idx + 1).take(3) {
+            let text = element_text(*next_row);
+            if !text.is_empty() && !text.starts_with("http") && !text.contains("duckduckgo.com") {
+                snippet = text;
+                break;
+            }
+        }
+        results.push(SearchResult {
+            title,
+            url,
+            snippet,
+        });
+        if results.len() >= limit {
+            break;
+        }
+    }
+    results
+}
+
+fn parse_bing_html(html: &str, limit: usize) -> Vec<SearchResult> {
+    let doc = Html::parse_document(html);
+    let item_sel = selector("li.b_algo, .b_result, .b_card");
+    let primary_link_sel = selector("h2 a, .b_title a");
+    let fallback_link_sel = selector("a[data-seid], a[href]");
+    let snippet_sel = selector(
+        ".b_caption p, .b_snippet, .b_descript, .b_caption, .b_excerpt, p, .b_algo_content",
+    );
+    let mut results = Vec::new();
+    for item in doc.select(&item_sel) {
+        let Some(a) = item
+            .select(&primary_link_sel)
+            .find(|a| !element_text(*a).is_empty())
+            .or_else(|| {
+                item.select(&fallback_link_sel)
+                    .find(|a| !element_text(*a).is_empty())
+            })
+        else {
+            continue;
+        };
+        let title = element_text(a);
+        let url = clean_bing_url(a.value().attr("href").unwrap_or_default());
+        if title.is_empty() || url.contains("bing.com") {
+            continue;
+        }
+        let snippet = item
+            .select(&snippet_sel)
+            .map(element_text)
+            .find(|text| !text.is_empty())
+            .unwrap_or_default();
+        results.push(SearchResult {
+            title,
+            url,
+            snippet,
+        });
+        if results.len() >= limit {
+            break;
+        }
+    }
+    results
+}
+
+fn parse_brave_html(html: &str, limit: usize) -> Vec<SearchResult> {
+    let doc = Html::parse_document(html);
+    let item_sel = selector("[data-type=web]");
+    let link_sel = selector("a[href]");
+    let title_sel = selector(".title, .search-snippet-title");
+    let snippet_sel = selector(".generic-snippet .content, .snippet-content, .description, p");
+    let mut results = Vec::new();
+    for item in doc.select(&item_sel) {
+        let lines: Vec<String> = element_text(item)
+            .split('\n')
+            .map(clean_text)
+            .filter(|line| !line.is_empty())
+            .collect();
+        let Some(a) = item.select(&link_sel).find(|a| {
+            a.value()
+                .attr("href")
+                .unwrap_or_default()
+                .starts_with("http")
+        }) else {
+            continue;
+        };
+        let url = a.value().attr("href").unwrap_or_default().to_string();
+        if url.contains("search.brave.com") {
+            continue;
+        }
+        let link_text = element_text(a);
+        let title = item
+            .select(&title_sel)
+            .map(element_text)
+            .find(|text| !text.is_empty())
+            .or_else(|| {
+                lines
+                    .iter()
+                    .enumerate()
+                    .find(|(idx, line)| *idx > 1 && line.len() > 8 && !line.contains(" › "))
+                    .map(|(_, line)| line.clone())
+            })
+            .unwrap_or(link_text);
+        let snippet = item
+            .select(&snippet_sel)
+            .map(element_text)
+            .find(|text| !text.is_empty())
+            .or_else(|| {
+                lines
+                    .iter()
+                    .enumerate()
+                    .find(|(idx, line)| *idx > 2 && **line != title && line.len() > 40)
+                    .map(|(_, line)| line.clone())
+            })
+            .unwrap_or_default();
+        if !title.is_empty() {
+            results.push(SearchResult {
+                title,
+                url,
+                snippet,
+            });
+        }
+        if results.len() >= limit {
+            break;
+        }
+    }
+    results
+}
+
 fn search_duckduckgo(cli: &Cli, query: &str, limit: usize) -> Result<SearchOutput> {
     let page = page_name("duckduckgo", query);
     let url = format!(
@@ -384,44 +590,8 @@ fn search_duckduckgo(cli: &Cli, query: &str, limit: usize) -> Result<SearchOutpu
         .arg("--timeout")
         .arg("5");
     let _ = run(wait_cmd);
-    let script = r#"
-JSON.stringify((() => {
-  function cleanUrl(href) {
-    try {
-      const u = new URL(href, location.href);
-      const uddg = u.searchParams.get('uddg');
-      if (uddg) return uddg;
-      return u.href;
-    } catch { return href; }
-  }
-  const out = [];
-  for (const a of document.querySelectorAll('a.result-link, .result__title a, a.result__a')) {
-    const title = (a.textContent || '').replace(/\s+/g, ' ').trim();
-    const url = cleanUrl(a.href || '');
-    let row = a.closest('tr');
-    let snippet = '';
-    for (let i = 0; row && i < 3; i++) {
-      row = row.nextElementSibling;
-      const text = (row?.innerText || '').replace(/\s+/g, ' ').trim();
-      if (text && !text.startsWith('http') && !text.includes('duckduckgo.com')) {
-        snippet = text;
-        break;
-      }
-    }
-    if (!snippet) {
-      snippet = (a.closest('.result')?.querySelector('.result__snippet, .result__body, .result__extras')?.textContent || '').replace(/\s+/g, ' ').trim();
-    }
-    out.push({ title, url, snippet });
-  }
-  return out.filter(r => r.title && r.url && !r.url.includes('duckduckgo.com')).slice(0, 20);
-})())
-"#;
-    let mut cmd = chrome_base_stealth(cli, &page);
-    cmd.arg("eval").arg(script);
-    let raw = run(cmd)?;
-    let decoded = serde_json::from_str::<String>(&raw).unwrap_or(raw);
-    let mut results: Vec<SearchResult> = serde_json::from_str(&decoded).unwrap_or_default();
-    results.truncate(limit);
+    let html = page_html(cli, &page, true)?;
+    let results = parse_duckduckgo_lite_html(&html, limit);
     Ok(SearchOutput {
         ok: true,
         query: query.to_string(),
@@ -451,22 +621,8 @@ fn search_brave(cli: &Cli, query: &str, limit: usize) -> Result<SearchOutput> {
         .arg("--timeout")
         .arg("5");
     let _ = run(wait_cmd);
-    let script = r#"
-JSON.stringify([...document.querySelectorAll('[data-type=web]')].map(el => {
-  const lines = (el.innerText || '').split('\n').map(s => s.trim()).filter(Boolean);
-  const link = [...el.querySelectorAll('a[href]')].find(a => a.href.startsWith('http'));
-  const url = link?.href || '';
-  const title = lines.find((line, idx) => idx > 1 && line.length > 8 && !line.includes(' › ')) || (link?.textContent || '').trim();
-  const snippet = lines.find((line, idx) => idx > 2 && line !== title && line.length > 40) || '';
-  return { title, url, snippet };
-}).filter(r => r.title && r.url && !r.url.includes('search.brave.com')).slice(0, 20))
-"#;
-    let mut cmd = chrome_base_stealth(cli, &page);
-    cmd.arg("eval").arg(script);
-    let raw = run(cmd)?;
-    let decoded = serde_json::from_str::<String>(&raw).unwrap_or(raw);
-    let mut results: Vec<SearchResult> = serde_json::from_str(&decoded).unwrap_or_default();
-    results.truncate(limit);
+    let html = page_html(cli, &page, true)?;
+    let results = parse_brave_html(&html, limit);
     Ok(SearchOutput {
         ok: true,
         query: query.to_string(),
@@ -494,38 +650,11 @@ fn search_bing(cli: &Cli, query: &str, limit: usize) -> Result<SearchOutput> {
         .arg("--timeout")
         .arg("5");
     let _ = run(wait_cmd);
-    let script = r#"
-JSON.stringify([...document.querySelectorAll('li.b_algo')].map(li => {
-  function cleanUrl(href) {
-    try {
-      const u = new URL(href);
-      if (u.hostname.includes('bing.com') && u.searchParams.get('u')) {
-        let encoded = u.searchParams.get('u');
-        if (encoded.startsWith('a1')) encoded = encoded.slice(2);
-        encoded = encoded.replace(/-/g, '+').replace(/_/g, '/');
-        try { return atob(encoded); } catch { return href; }
-      }
-    } catch {}
-    return href;
-  }
-  const links = [...li.querySelectorAll('a[href]')].filter(a => a.textContent.trim().length > 0);
-  const a = links.find(a => !a.textContent.includes('http')) || links[0];
-  const title = (a?.textContent || '').trim();
-  const url = cleanUrl(a?.href || '');
-  const caption = li.querySelector('.b_caption p, p, .b_lineclamp2, .b_algoSlug')?.textContent || '';
-  const snippet = caption.replace(/\s+/g, ' ').trim();
-  return { title, url, snippet };
-}).filter(r => r.title && r.url && !r.url.includes('bing.com')).slice(0, 20))
-"#;
-    let mut cmd = chrome_base(cli, &page);
-    cmd.arg("eval").arg(script);
-    let raw = run(cmd)?;
-    let decoded = serde_json::from_str::<String>(&raw).unwrap_or(raw);
-    let mut results: Vec<SearchResult> = serde_json::from_str(&decoded).unwrap_or_default();
+    let html = page_html(cli, &page, false)?;
+    let mut results = parse_bing_html(&html, limit);
     if results.is_empty() {
         results = parse_bing_text_fallback(cli, &page, limit)?;
     }
-    results.truncate(limit);
     Ok(SearchOutput {
         ok: true,
         query: query.to_string(),
@@ -581,7 +710,12 @@ fn assess_quality(results: &[SearchResult], query: &str) -> f64 {
         "is", "are", "was", "were", "be", "been", "have", "has", "had", "do", "does", "did",
         "will", "would", "could", "should", "may", "might", "must", "can", "site",
     ];
-    let words: Vec<String> = query
+    let normalized_query = query
+        .split_whitespace()
+        .filter(|term| !term.to_lowercase().starts_with("site:"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let words: Vec<String> = normalized_query
         .to_lowercase()
         .split(|c: char| !c.is_ascii_alphanumeric())
         .filter(|w| w.len() > 2 && !common.contains(w))
@@ -591,7 +725,8 @@ fn assess_quality(results: &[SearchResult], query: &str) -> f64 {
         return 0.5;
     }
     let mut total = 0.0;
-    for result in results {
+    let mut total_weight = 0.0;
+    for (idx, result) in results.iter().enumerate() {
         let combined = format!("{} {} {}", result.title, result.snippet, result.url).to_lowercase();
         let keyword_matches = words
             .iter()
@@ -607,9 +742,12 @@ fn assess_quality(results: &[SearchResult], query: &str) -> f64 {
             phrase_matches += 1;
         }
         let score = (keyword_matches as f64 / words.len() as f64) + (phrase_matches as f64 * 0.3);
-        total += score.min(1.0);
+        let top_result_boost = if idx == 0 { 0.2 } else { 0.0 };
+        let weight = 1.0 / (idx + 1) as f64;
+        total += (score + top_result_boost).min(1.0) * weight;
+        total_weight += weight;
     }
-    total / results.len() as f64
+    total / total_weight
 }
 
 fn run_bench(cli: &Cli, cases_path: &str, out_path: Option<&str>, engine: Engine) -> Result<()> {
@@ -953,4 +1091,98 @@ fn print_search(out: &SearchOutput, json: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn duckduckgo_lite_parser_extracts_result_and_decodes_redirect() {
+        let html = r#"
+        <html><body><table>
+          <tr><td>1.</td><td><a class="result-link" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.zdnet.com%2Farticle%2Fgreg%2Dkroah%2Dhartman%2Dlinux%2Dkernel%2Drust%2F&amp;rut=abc">'Rust makes coding fun again' - ZDNET</a></td></tr>
+          <tr><td></td><td>At Open Source Summit India, Greg Kroah-Hartman said the Linux kernel is moving toward Rust.</td></tr>
+          <tr><td></td><td>www.zdnet.com/article/greg-kroah-hartman-linux-kernel-rust/</td></tr>
+        </table></body></html>
+        "#;
+        let results = parse_duckduckgo_lite_html(html, 5);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "'Rust makes coding fun again' - ZDNET");
+        assert_eq!(
+            results[0].url,
+            "https://www.zdnet.com/article/greg-kroah-hartman-linux-kernel-rust/"
+        );
+        assert!(results[0].snippet.contains("Greg Kroah-Hartman"));
+    }
+
+    #[test]
+    fn bing_parser_prefers_title_link_and_decodes_redirect() {
+        let target = "https://thenextweb.com/news/speed-not-selling-point-ai-agents-caution";
+        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(target.as_bytes());
+        let html = format!(
+            r#"
+            <html><body><ol>
+              <li class="b_algo">
+                <div><a href="https://www.bing.com/ck/a?u=a1{}">thenextweb.com › news</a></div>
+                <h2><a href="https://www.bing.com/ck/a?u=a1{}">Speed is no longer a selling point for AI agents, caution is - TNW</a></h2>
+                <div class="b_caption"><p>AI agents need caution more than raw speed.</p></div>
+              </li>
+            </ol></body></html>
+            "#,
+            encoded, encoded
+        );
+        let results = parse_bing_html(&html, 5);
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].title,
+            "Speed is no longer a selling point for AI agents, caution is - TNW"
+        );
+        assert_eq!(results[0].url, target);
+        assert!(results[0].snippet.contains("caution"));
+    }
+
+    #[test]
+    fn brave_parser_extracts_title_snippet_and_url() {
+        let html = r#"
+        <html><body>
+          <div data-type="web">
+            <a href="https://www.zdnet.com/article/greg-kroah-hartman-linux-kernel-rust/">
+              <div class="site-name-content"><div>ZDNET</div><cite>zdnet.com › article</cite></div>
+              <div class="title search-snippet-title">'Rust makes coding fun again': Why Linux is moving away from C, according to Greg Kroah-Hartman | ZDNET</div>
+            </a>
+            <div class="generic-snippet"><div class="content">The Linux kernel is moving toward Rust, Greg Kroah-Hartman said.</div></div>
+          </div>
+        </body></html>
+        "#;
+        let results = parse_brave_html(html, 5);
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].url,
+            "https://www.zdnet.com/article/greg-kroah-hartman-linux-kernel-rust/"
+        );
+        assert!(
+            results[0]
+                .title
+                .starts_with("'Rust makes coding fun again'")
+        );
+        assert!(results[0].snippet.contains("Linux kernel"));
+    }
+
+    #[test]
+    fn quality_scoring_prefers_specific_results() {
+        let good = vec![SearchResult {
+            title: "Speed is no longer a selling point for AI agents, caution is - TNW".to_string(),
+            url: "https://thenextweb.com/news/speed-not-selling-point-ai-agents-caution"
+                .to_string(),
+            snippet: "AI agents need a cautious pause.".to_string(),
+        }];
+        let weak = vec![SearchResult {
+            title: "AI news".to_string(),
+            url: "https://example.com/ai".to_string(),
+            snippet: "General technology news.".to_string(),
+        }];
+        let query = "site:thenextweb.com/news speed no longer selling point AI agents caution";
+        assert!(assess_quality(&good, query) > assess_quality(&weak, query));
+    }
 }
