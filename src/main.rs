@@ -4,9 +4,10 @@ use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use std::collections::HashMap;
 use std::fs;
+use std::fs::File;
 use std::process::{Command, Stdio};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use url::Url;
 use wait_timeout::ChildExt;
 
@@ -301,32 +302,46 @@ fn chrome_base_inner(cli: &Cli, page: &str, stealth: bool) -> Command {
 }
 
 fn run_cmd(mut cmd: Command, timeout_secs: u64) -> Result<String> {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let stdout_path = std::env::temp_dir().join(format!(
+        "chrome-agent-search-{}-{stamp}.stdout",
+        std::process::id()
+    ));
+    let stderr_path = std::env::temp_dir().join(format!(
+        "chrome-agent-search-{}-{stamp}.stderr",
+        std::process::id()
+    ));
+    let stdout_file = File::create(&stdout_path).context("create stdout temp file")?;
+    let stderr_file = File::create(&stderr_path).context("create stderr temp file")?;
     let mut child = cmd
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stdout(Stdio::from(stdout_file))
+        .stderr(Stdio::from(stderr_file))
         .spawn()
         .context("failed to run chrome-agent")?;
-    match child
+    let status = match child
         .wait_timeout(Duration::from_secs(timeout_secs))
         .context("failed waiting for chrome-agent")?
     {
-        Some(_) => {
-            let output = child
-                .wait_with_output()
-                .context("failed to read chrome-agent output")?;
-            if !output.status.success() {
-                let err = String::from_utf8_lossy(&output.stderr);
-                let out = String::from_utf8_lossy(&output.stdout);
-                return Err(anyhow!("chrome-agent failed: {}{}", err, out));
-            }
-            Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-        }
+        Some(status) => status,
         None => {
             let _ = child.kill();
             let _ = child.wait();
-            Err(anyhow!("chrome-agent timed out after {timeout_secs}s"))
+            let _ = fs::remove_file(&stdout_path);
+            let _ = fs::remove_file(&stderr_path);
+            return Err(anyhow!("chrome-agent timed out after {timeout_secs}s"));
         }
+    };
+    let out = fs::read_to_string(&stdout_path).unwrap_or_default();
+    let err = fs::read_to_string(&stderr_path).unwrap_or_default();
+    let _ = fs::remove_file(&stdout_path);
+    let _ = fs::remove_file(&stderr_path);
+    if !status.success() {
+        return Err(anyhow!("chrome-agent failed: {}{}", err, out));
     }
+    Ok(out.trim().to_string())
 }
 
 fn page_name(prefix: &str, value: &str) -> String {
