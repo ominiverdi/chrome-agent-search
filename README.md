@@ -1,6 +1,6 @@
 # chrome-agent-search
 
-Local-first Rust CLI for web search and page reading, inspired by [`web-search-mcp`](https://github.com/mzxrai/mcp-webresearch) and powered by [`chrome-agent`](https://github.com/sderosiaux/chrome-agent).
+Local-first Rust CLI for web search and page reading, inspired by [`web-search-mcp`](https://github.com/mrkrsl/web-search-mcp) and powered by [`chrome-agent`](https://github.com/sderosiaux/chrome-agent).
 
 It is a pure command-line tool. No MCP server is embedded.
 
@@ -15,14 +15,21 @@ It is a pure command-line tool. No MCP server is embedded.
 
 ## Install
 
+Rust users:
+
 ```sh
-cargo install --git https://github.com/ominiverdi/chrome-agent-search
+cargo install chrome-agent --locked
+cargo install --git https://github.com/ominiverdi/chrome-agent-search --locked
 ```
+
+Prebuilt binaries are available on the GitHub Releases page.
 
 Requirements:
 
 - `chrome-agent` in `PATH`
 - Chromium/Chrome usable by `chrome-agent`
+
+See [`INSTALL.md`](INSTALL.md) for package/release install details.
 
 ## Usage
 
