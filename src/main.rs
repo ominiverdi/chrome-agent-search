@@ -320,7 +320,7 @@ fn search(cli: &Cli, query: &str, limit: usize, engine: Engine) -> Result<Search
 fn search_duckduckgo(cli: &Cli, query: &str, limit: usize) -> Result<SearchOutput> {
     let page = page_name("duckduckgo", query);
     let url = format!(
-        "https://html.duckduckgo.com/html/?q={}",
+        "https://lite.duckduckgo.com/lite/?q={}",
         urlencoding::encode(query)
     );
     let start = Instant::now();
@@ -331,26 +331,41 @@ fn search_duckduckgo(cli: &Cli, query: &str, limit: usize) -> Result<SearchOutpu
     wait_cmd
         .arg("wait")
         .arg("selector")
-        .arg(".result, .result__title")
+        .arg("a.result-link, .result__title a")
         .arg("--timeout")
         .arg("5");
     let _ = run(wait_cmd);
     let script = r#"
-JSON.stringify([...document.querySelectorAll('.result')].map(el => {
+JSON.stringify((() => {
   function cleanUrl(href) {
     try {
       const u = new URL(href, location.href);
       const uddg = u.searchParams.get('uddg');
-      if (uddg) return decodeURIComponent(uddg);
+      if (uddg) return uddg;
       return u.href;
     } catch { return href; }
   }
-  const a = el.querySelector('.result__title a, a.result__a, a[href]');
-  const title = (a?.textContent || '').replace(/\s+/g, ' ').trim();
-  const url = cleanUrl(a?.href || '');
-  const snippet = (el.querySelector('.result__snippet, .result__body, .result__extras')?.textContent || '').replace(/\s+/g, ' ').trim();
-  return { title, url, snippet };
-}).filter(r => r.title && r.url && !r.url.includes('duckduckgo.com')).slice(0, 20))
+  const out = [];
+  for (const a of document.querySelectorAll('a.result-link, .result__title a, a.result__a')) {
+    const title = (a.textContent || '').replace(/\s+/g, ' ').trim();
+    const url = cleanUrl(a.href || '');
+    let row = a.closest('tr');
+    let snippet = '';
+    for (let i = 0; row && i < 3; i++) {
+      row = row.nextElementSibling;
+      const text = (row?.innerText || '').replace(/\s+/g, ' ').trim();
+      if (text && !text.startsWith('http') && !text.includes('duckduckgo.com')) {
+        snippet = text;
+        break;
+      }
+    }
+    if (!snippet) {
+      snippet = (a.closest('.result')?.querySelector('.result__snippet, .result__body, .result__extras')?.textContent || '').replace(/\s+/g, ' ').trim();
+    }
+    out.push({ title, url, snippet });
+  }
+  return out.filter(r => r.title && r.url && !r.url.includes('duckduckgo.com')).slice(0, 20);
+})())
 "#;
     let mut cmd = chrome_base_stealth(cli, &page);
     cmd.arg("eval").arg(script);
