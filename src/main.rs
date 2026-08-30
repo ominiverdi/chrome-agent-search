@@ -1,14 +1,17 @@
 use anyhow::{Context, Result, anyhow};
-use base64::Engine as Base64Engine;
 use clap::{Parser, Subcommand, ValueEnum};
-use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use std::fs;
 use std::process::Command;
 use std::thread;
 use std::time::Instant;
-use url::Url;
+
+mod parsers;
+mod scoring;
+
+use parsers::{parse_bing_html, parse_brave_html, parse_duckduckgo_lite_html};
+use scoring::assess_quality;
 
 #[derive(Parser, Debug, Clone)]
 #[command(name = "chrome-agent-search")]
@@ -25,6 +28,15 @@ struct Cli {
 
     #[arg(long, global = true)]
     stealth: bool,
+
+    #[arg(long, global = true)]
+    copy_cookies: bool,
+
+    #[arg(long, global = true)]
+    headed: bool,
+
+    #[arg(long, global = true)]
+    connect: Option<String>,
 
     #[arg(long, global = true)]
     json: bool,
@@ -235,6 +247,15 @@ fn chrome_base_inner(cli: &Cli, page: &str, stealth: bool) -> Command {
     if stealth {
         cmd.arg("--stealth");
     }
+    if cli.copy_cookies {
+        cmd.arg("--copy-cookies");
+    }
+    if cli.headed {
+        cmd.arg("--headed");
+    }
+    if let Some(connect) = &cli.connect {
+        cmd.arg("--connect").arg(connect);
+    }
     cmd
 }
 
@@ -407,198 +428,6 @@ fn search(cli: &Cli, query: &str, limit: usize, engine: Engine) -> Result<Search
                 .ok_or_else(|| anyhow!("all search engines failed"))
         }
     }
-}
-
-fn selector(css: &str) -> Selector {
-    Selector::parse(css).expect("valid selector")
-}
-
-fn clean_text(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-fn element_text(element: scraper::ElementRef<'_>) -> String {
-    clean_text(&element.text().collect::<Vec<_>>().join(" "))
-}
-
-fn clean_duckduckgo_url(href: &str) -> String {
-    let parsed = Url::parse(href)
-        .or_else(|_| Url::parse("https://duckduckgo.com").and_then(|base| base.join(href)));
-    parsed
-        .ok()
-        .and_then(|url| {
-            url.query_pairs()
-                .find(|(key, _)| key == "uddg")
-                .map(|(_, value)| value.into_owned())
-        })
-        .unwrap_or_else(|| href.to_string())
-}
-
-fn clean_bing_url(href: &str) -> String {
-    let Ok(url) = Url::parse(href) else {
-        return href.to_string();
-    };
-    if !url.host_str().unwrap_or_default().contains("bing.com") {
-        return href.to_string();
-    }
-    let Some(mut encoded) = url
-        .query_pairs()
-        .find(|(key, _)| key == "u")
-        .map(|(_, value)| value.into_owned())
-    else {
-        return href.to_string();
-    };
-    if let Some(stripped) = encoded.strip_prefix("a1") {
-        encoded = stripped.to_string();
-    }
-    base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(encoded.as_bytes())
-        .or_else(|_| base64::engine::general_purpose::STANDARD.decode(encoded.as_bytes()))
-        .ok()
-        .and_then(|bytes| String::from_utf8(bytes).ok())
-        .unwrap_or_else(|| href.to_string())
-}
-
-fn parse_duckduckgo_lite_html(html: &str, limit: usize) -> Vec<SearchResult> {
-    let doc = Html::parse_document(html);
-    let link_sel = selector("a.result-link, .result__title a, a.result__a");
-    let tr_sel = selector("tr");
-    let rows: Vec<_> = doc.select(&tr_sel).collect();
-    let mut results = Vec::new();
-    for (idx, row) in rows.iter().enumerate() {
-        let Some(a) = row.select(&link_sel).next() else {
-            continue;
-        };
-        let title = element_text(a);
-        let href = a.value().attr("href").unwrap_or_default();
-        let url = clean_duckduckgo_url(href);
-        if title.is_empty() || url.contains("duckduckgo.com") {
-            continue;
-        }
-        let mut snippet = String::new();
-        for next_row in rows.iter().skip(idx + 1).take(3) {
-            let text = element_text(*next_row);
-            if !text.is_empty() && !text.starts_with("http") && !text.contains("duckduckgo.com") {
-                snippet = text;
-                break;
-            }
-        }
-        results.push(SearchResult {
-            title,
-            url,
-            snippet,
-        });
-        if results.len() >= limit {
-            break;
-        }
-    }
-    results
-}
-
-fn parse_bing_html(html: &str, limit: usize) -> Vec<SearchResult> {
-    let doc = Html::parse_document(html);
-    let item_sel = selector("li.b_algo, .b_result, .b_card");
-    let primary_link_sel = selector("h2 a, .b_title a");
-    let fallback_link_sel = selector("a[data-seid], a[href]");
-    let snippet_sel = selector(
-        ".b_caption p, .b_snippet, .b_descript, .b_caption, .b_excerpt, p, .b_algo_content",
-    );
-    let mut results = Vec::new();
-    for item in doc.select(&item_sel) {
-        let Some(a) = item
-            .select(&primary_link_sel)
-            .find(|a| !element_text(*a).is_empty())
-            .or_else(|| {
-                item.select(&fallback_link_sel)
-                    .find(|a| !element_text(*a).is_empty())
-            })
-        else {
-            continue;
-        };
-        let title = element_text(a);
-        let url = clean_bing_url(a.value().attr("href").unwrap_or_default());
-        if title.is_empty() || url.contains("bing.com") {
-            continue;
-        }
-        let snippet = item
-            .select(&snippet_sel)
-            .map(element_text)
-            .find(|text| !text.is_empty())
-            .unwrap_or_default();
-        results.push(SearchResult {
-            title,
-            url,
-            snippet,
-        });
-        if results.len() >= limit {
-            break;
-        }
-    }
-    results
-}
-
-fn parse_brave_html(html: &str, limit: usize) -> Vec<SearchResult> {
-    let doc = Html::parse_document(html);
-    let item_sel = selector("[data-type=web]");
-    let link_sel = selector("a[href]");
-    let title_sel = selector(".title, .search-snippet-title");
-    let snippet_sel = selector(".generic-snippet .content, .snippet-content, .description, p");
-    let mut results = Vec::new();
-    for item in doc.select(&item_sel) {
-        let lines: Vec<String> = element_text(item)
-            .split('\n')
-            .map(clean_text)
-            .filter(|line| !line.is_empty())
-            .collect();
-        let Some(a) = item.select(&link_sel).find(|a| {
-            a.value()
-                .attr("href")
-                .unwrap_or_default()
-                .starts_with("http")
-        }) else {
-            continue;
-        };
-        let url = a.value().attr("href").unwrap_or_default().to_string();
-        if url.contains("search.brave.com") {
-            continue;
-        }
-        let link_text = element_text(a);
-        let title = item
-            .select(&title_sel)
-            .map(element_text)
-            .find(|text| !text.is_empty())
-            .or_else(|| {
-                lines
-                    .iter()
-                    .enumerate()
-                    .find(|(idx, line)| *idx > 1 && line.len() > 8 && !line.contains(" › "))
-                    .map(|(_, line)| line.clone())
-            })
-            .unwrap_or(link_text);
-        let snippet = item
-            .select(&snippet_sel)
-            .map(element_text)
-            .find(|text| !text.is_empty())
-            .or_else(|| {
-                lines
-                    .iter()
-                    .enumerate()
-                    .find(|(idx, line)| *idx > 2 && **line != title && line.len() > 40)
-                    .map(|(_, line)| line.clone())
-            })
-            .unwrap_or_default();
-        if !title.is_empty() {
-            results.push(SearchResult {
-                title,
-                url,
-                snippet,
-            });
-        }
-        if results.len() >= limit {
-            break;
-        }
-    }
-    results
 }
 
 fn search_duckduckgo(cli: &Cli, query: &str, limit: usize) -> Result<SearchOutput> {
@@ -796,55 +625,6 @@ fn parse_bing_text_fallback(cli: &Cli, page: &str, limit: usize) -> Result<Vec<S
         i += 1;
     }
     Ok(out)
-}
-
-fn assess_quality(results: &[SearchResult], query: &str) -> f64 {
-    if results.is_empty() {
-        return 0.0;
-    }
-    let common = [
-        "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with", "by",
-        "is", "are", "was", "were", "be", "been", "have", "has", "had", "do", "does", "did",
-        "will", "would", "could", "should", "may", "might", "must", "can", "site",
-    ];
-    let normalized_query = query
-        .split_whitespace()
-        .filter(|term| !term.to_lowercase().starts_with("site:"))
-        .collect::<Vec<_>>()
-        .join(" ");
-    let words: Vec<String> = normalized_query
-        .to_lowercase()
-        .split(|c: char| !c.is_ascii_alphanumeric())
-        .filter(|w| w.len() > 2 && !common.contains(w))
-        .map(ToString::to_string)
-        .collect();
-    if words.is_empty() {
-        return 0.5;
-    }
-    let mut total = 0.0;
-    let mut total_weight = 0.0;
-    for (idx, result) in results.iter().enumerate() {
-        let combined = format!("{} {} {}", result.title, result.snippet, result.url).to_lowercase();
-        let keyword_matches = words
-            .iter()
-            .filter(|w| combined.contains(w.as_str()))
-            .count();
-        let mut phrase_matches = 0;
-        for pair in words.windows(2) {
-            if combined.contains(&pair.join(" ")) {
-                phrase_matches += 1;
-            }
-        }
-        if words.len() >= 3 && combined.contains(&words[..3].join(" ")) {
-            phrase_matches += 1;
-        }
-        let score = (keyword_matches as f64 / words.len() as f64) + (phrase_matches as f64 * 0.3);
-        let top_result_boost = if idx == 0 { 0.2 } else { 0.0 };
-        let weight = 1.0 / (idx + 1) as f64;
-        total += (score + top_result_boost).min(1.0) * weight;
-        total_weight += weight;
-    }
-    total / total_weight
 }
 
 fn run_bench(
@@ -1253,6 +1033,7 @@ fn print_search(out: &SearchOutput, json: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine as _;
 
     #[test]
     fn duckduckgo_lite_parser_extracts_result_and_decodes_redirect() {

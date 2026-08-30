@@ -49,6 +49,14 @@ chrome-agent-search search 'query' --engine brave
 chrome-agent-search search 'query' --engine duckduckgo
 ```
 
+Browser options pass through to `chrome-agent`:
+
+```sh
+chrome-agent-search --stealth search 'query'
+chrome-agent-search --copy-cookies read 'https://example.com/account'
+chrome-agent-search --headed --connect http://127.0.0.1:9222 read 'https://example.com'
+```
+
 ## Benchmarks
 
 ```sh
