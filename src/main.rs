@@ -4,10 +4,11 @@ use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use std::collections::HashMap;
 use std::fs;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use url::Url;
+use wait_timeout::ChildExt;
 
 mod parsers;
 mod scoring;
@@ -39,6 +40,15 @@ struct Cli {
 
     #[arg(long, global = true)]
     connect: Option<String>,
+
+    #[arg(long, default_value_t = 30, global = true)]
+    chrome_timeout: u64,
+
+    #[arg(long, default_value_t = 90, global = true)]
+    command_timeout: u64,
+
+    #[arg(long, default_value_t = 5, global = true)]
+    wait_timeout: u64,
 
     #[arg(long, global = true)]
     json: bool,
@@ -73,6 +83,8 @@ enum Commands {
         max_chars: usize,
         #[arg(long, default_value_t = 3)]
         concurrency: usize,
+        #[arg(long)]
+        read_timeout: Option<u64>,
         #[arg(long, value_enum, default_value_t = Engine::Auto)]
         engine: Engine,
     },
@@ -231,9 +243,18 @@ fn main() -> Result<()> {
             limit,
             max_chars,
             concurrency,
+            read_timeout,
             engine,
         } => {
-            let out = full_search(&cli, query, *limit, *max_chars, *engine, *concurrency)?;
+            let out = full_search(
+                &cli,
+                query,
+                *limit,
+                *max_chars,
+                *engine,
+                *concurrency,
+                *read_timeout,
+            )?;
             print_full(&out, cli.json)?;
         }
         Commands::Bench {
@@ -261,7 +282,9 @@ fn chrome_base_inner(cli: &Cli, page: &str, stealth: bool) -> Command {
     cmd.arg("--browser")
         .arg(&cli.browser)
         .arg("--page")
-        .arg(page);
+        .arg(page)
+        .arg("--timeout")
+        .arg(cli.chrome_timeout.to_string());
     if stealth {
         cmd.arg("--stealth");
     }
@@ -277,14 +300,33 @@ fn chrome_base_inner(cli: &Cli, page: &str, stealth: bool) -> Command {
     cmd
 }
 
-fn run(mut cmd: Command) -> Result<String> {
-    let output = cmd.output().context("failed to run chrome-agent")?;
-    if !output.status.success() {
-        let err = String::from_utf8_lossy(&output.stderr);
-        let out = String::from_utf8_lossy(&output.stdout);
-        return Err(anyhow!("chrome-agent failed: {}{}", err, out));
+fn run_cmd(mut cmd: Command, timeout_secs: u64) -> Result<String> {
+    let mut child = cmd
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("failed to run chrome-agent")?;
+    match child
+        .wait_timeout(Duration::from_secs(timeout_secs))
+        .context("failed waiting for chrome-agent")?
+    {
+        Some(_) => {
+            let output = child
+                .wait_with_output()
+                .context("failed to read chrome-agent output")?;
+            if !output.status.success() {
+                let err = String::from_utf8_lossy(&output.stderr);
+                let out = String::from_utf8_lossy(&output.stdout);
+                return Err(anyhow!("chrome-agent failed: {}{}", err, out));
+            }
+            Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        }
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(anyhow!("chrome-agent timed out after {timeout_secs}s"))
+        }
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 fn page_name(prefix: &str, value: &str) -> String {
@@ -298,7 +340,7 @@ fn goto(cli: &Cli, page: &str, url: &str) -> Result<(String, f64)> {
     let start = Instant::now();
     let mut cmd = chrome_base(cli, page);
     cmd.arg("goto").arg(url);
-    let text = run(cmd)?;
+    let text = run_cmd(cmd, cli.command_timeout)?;
     Ok((text, start.elapsed().as_secs_f64()))
 }
 
@@ -309,7 +351,7 @@ fn page_html(cli: &Cli, page: &str, stealth: bool) -> Result<String> {
         chrome_base(cli, page)
     };
     cmd.arg("eval").arg("document.documentElement.outerHTML");
-    let raw = run(cmd)?;
+    let raw = run_cmd(cmd, cli.command_timeout)?;
     Ok(serde_json::from_str::<String>(&raw).unwrap_or(raw))
 }
 
@@ -319,7 +361,7 @@ fn read_url(cli: &Cli, url: &str, max_chars: usize) -> Result<TimedText> {
     let start = Instant::now();
     let mut cmd = chrome_base(cli, &page);
     cmd.arg("read").arg("--truncate").arg(max_chars.to_string());
-    let text = run(cmd)?;
+    let text = run_cmd(cmd, cli.command_timeout)?;
     Ok(TimedText {
         ok: true,
         url: url.to_string(),
@@ -341,7 +383,7 @@ fn text_url(cli: &Cli, url: &str, selector: &str, max_chars: usize) -> Result<Ti
         .arg(selector)
         .arg("--truncate")
         .arg(max_chars.to_string());
-    let text = run(cmd)?;
+    let text = run_cmd(cmd, cli.command_timeout)?;
     Ok(TimedText {
         ok: true,
         url: url.to_string(),
@@ -360,10 +402,12 @@ fn full_search(
     max_chars: usize,
     engine: Engine,
     concurrency: usize,
+    read_timeout: Option<u64>,
 ) -> Result<FullOutput> {
     let search_out = search(cli, query, limit, engine)?;
     let items: Vec<SearchResult> = search_out.results.into_iter().take(limit).collect();
-    let results = read_results_concurrently(cli, items, max_chars, concurrency.max(1));
+    let results =
+        read_results_concurrently(cli, items, max_chars, concurrency.max(1), read_timeout);
     Ok(FullOutput {
         ok: true,
         query: query.to_string(),
@@ -378,12 +422,17 @@ fn read_results_concurrently(
     items: Vec<SearchResult>,
     max_chars: usize,
     concurrency: usize,
+    read_timeout: Option<u64>,
 ) -> Vec<FullResult> {
     let mut out = Vec::with_capacity(items.len());
     for chunk in items.chunks(concurrency) {
         let mut handles = Vec::with_capacity(chunk.len());
         for item in chunk.iter().cloned() {
-            let cli = cli.clone();
+            let mut cli = cli.clone();
+            if let Some(read_timeout) = read_timeout {
+                cli.command_timeout = read_timeout;
+                cli.chrome_timeout = read_timeout;
+            }
             handles.push(thread::spawn(move || {
                 match read_url(&cli, &item.url, max_chars) {
                     Ok(read) => FullResult {
@@ -562,15 +611,15 @@ fn search_duckduckgo(cli: &Cli, query: &str, limit: usize) -> Result<SearchOutpu
     let start = Instant::now();
     let mut goto_cmd = chrome_base_stealth(cli, &page);
     goto_cmd.arg("goto").arg(&url);
-    run(goto_cmd)?;
+    run_cmd(goto_cmd, cli.command_timeout)?;
     let mut wait_cmd = chrome_base_stealth(cli, &page);
     wait_cmd
         .arg("wait")
         .arg("selector")
         .arg("a.result-link, .result__title a")
         .arg("--timeout")
-        .arg("5");
-    let _ = run(wait_cmd);
+        .arg(cli.wait_timeout.to_string());
+    let _ = run_cmd(wait_cmd, cli.command_timeout);
     let html = page_html(cli, &page, true)?;
     let mut results = parse_duckduckgo_lite_html(&html, limit);
     tag_sources(&mut results, "duckduckgo");
@@ -594,15 +643,15 @@ fn search_brave(cli: &Cli, query: &str, limit: usize) -> Result<SearchOutput> {
     let start = Instant::now();
     let mut goto_cmd = chrome_base_stealth(cli, &page);
     goto_cmd.arg("goto").arg(&url);
-    run(goto_cmd)?;
+    run_cmd(goto_cmd, cli.command_timeout)?;
     let mut wait_cmd = chrome_base_stealth(cli, &page);
     wait_cmd
         .arg("wait")
         .arg("selector")
         .arg("[data-type=web]")
         .arg("--timeout")
-        .arg("5");
-    let _ = run(wait_cmd);
+        .arg(cli.wait_timeout.to_string());
+    let _ = run_cmd(wait_cmd, cli.command_timeout);
     let html = page_html(cli, &page, true)?;
     let mut results = parse_brave_html(&html, limit);
     tag_sources(&mut results, "brave");
@@ -657,26 +706,26 @@ fn search_bing_homepage(
         .arg("selector")
         .arg("#sb_form_q")
         .arg("--timeout")
-        .arg("5");
-    run(wait_cmd)?;
+        .arg(cli.wait_timeout.to_string());
+    run_cmd(wait_cmd, cli.command_timeout)?;
     let mut fill_cmd = chrome_base(cli, &page);
     fill_cmd
         .arg("fill")
         .arg("--selector")
         .arg("#sb_form_q")
         .arg(query);
-    run(fill_cmd)?;
+    run_cmd(fill_cmd, cli.command_timeout)?;
     let mut press_cmd = chrome_base(cli, &page);
     press_cmd.arg("press").arg("Enter");
-    run(press_cmd)?;
+    run_cmd(press_cmd, cli.command_timeout)?;
     let mut results_wait_cmd = chrome_base(cli, &page);
     results_wait_cmd
         .arg("wait")
         .arg("selector")
         .arg("li.b_algo")
         .arg("--timeout")
-        .arg("5");
-    let _ = run(results_wait_cmd);
+        .arg(cli.wait_timeout.to_string());
+    let _ = run_cmd(results_wait_cmd, cli.command_timeout);
     let html = page_html(cli, &page, false)?;
     let mut results = parse_bing_html(&html, limit);
     if results.is_empty() {
@@ -701,8 +750,8 @@ fn search_bing_direct(cli: &Cli, query: &str, limit: usize) -> Result<(String, V
         .arg("selector")
         .arg("li.b_algo")
         .arg("--timeout")
-        .arg("5");
-    let _ = run(wait_cmd);
+        .arg(cli.wait_timeout.to_string());
+    let _ = run_cmd(wait_cmd, cli.command_timeout);
     let html = page_html(cli, &page, false)?;
     let mut results = parse_bing_html(&html, limit);
     if results.is_empty() {
@@ -726,7 +775,7 @@ fn parse_bing_text_fallback(cli: &Cli, page: &str, limit: usize) -> Result<Vec<S
         .arg("body")
         .arg("--truncate")
         .arg("12000");
-    let text = run(cmd)?;
+    let text = run_cmd(cmd, cli.command_timeout)?;
     let lines: Vec<&str> = text
         .lines()
         .map(str::trim)
@@ -895,6 +944,7 @@ fn run_bench_case(cli: &Cli, case: &BenchCase, engine: Engine, concurrency: usiz
                 case.max_chars.unwrap_or(8000),
                 engine,
                 concurrency,
+                None,
             ) {
                 Ok(out) => {
                     let mut combined = String::new();
