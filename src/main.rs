@@ -494,30 +494,73 @@ fn search(cli: &Cli, query: &str, limit: usize, engine: Engine) -> Result<Search
         Engine::Bing => search_bing(cli, query, limit),
         Engine::Brave => search_brave(cli, query, limit),
         Engine::Duckduckgo => search_duckduckgo(cli, query, limit),
-        Engine::Auto | Engine::All => search_all(cli, query, limit),
+        Engine::Auto => search_auto(cli, query, limit),
+        Engine::All => search_all(cli, query, limit),
     }
+}
+
+fn search_auto(cli: &Cli, query: &str, limit: usize) -> Result<SearchOutput> {
+    let start = Instant::now();
+    let fast = run_searches_parallel(cli, query, limit, &[search_brave, search_duckduckgo]);
+    if fast.is_empty() {
+        return search_all(cli, query, limit);
+    }
+    let fast_pages = fast.iter().map(|out| out.page.clone()).collect::<Vec<_>>();
+    let fast_candidates = fast
+        .into_iter()
+        .flat_map(|out| out.results.into_iter())
+        .collect::<Vec<_>>();
+    let fast_results = merge_results(fast_candidates, query, limit);
+    let top_quality = fast_results
+        .first()
+        .map(|result| assess_quality(std::slice::from_ref(result), query))
+        .unwrap_or(0.0);
+    if top_quality >= 0.75 || assess_quality(&fast_results, query) >= 0.65 {
+        return Ok(SearchOutput {
+            ok: true,
+            query: query.to_string(),
+            engine: "auto".to_string(),
+            page: fast_pages.join(","),
+            seconds: start.elapsed().as_secs_f64(),
+            count: fast_results.len(),
+            results: fast_results,
+        });
+    }
+
+    let mut pages = fast_pages;
+    let mut candidates = fast_results;
+    if let Ok(out) = search_bing(cli, query, limit) {
+        pages.push(out.page);
+        candidates.extend(out.results);
+    }
+    if candidates.is_empty() {
+        return Err(anyhow!("all search engines failed"));
+    }
+    let results = merge_results(candidates, query, limit);
+    Ok(SearchOutput {
+        ok: true,
+        query: query.to_string(),
+        engine: "auto".to_string(),
+        page: pages.join(","),
+        seconds: start.elapsed().as_secs_f64(),
+        count: results.len(),
+        results,
+    })
 }
 
 fn search_all(cli: &Cli, query: &str, limit: usize) -> Result<SearchOutput> {
     let start = Instant::now();
-    let query_owned = query.to_string();
-    let searches: [fn(&Cli, &str, usize) -> Result<SearchOutput>; 3] =
-        [search_bing, search_brave, search_duckduckgo];
-    let handles = searches
-        .into_iter()
-        .map(|search_fn| {
-            let cli = cli.clone();
-            let query = query_owned.clone();
-            thread::spawn(move || search_fn(&cli, &query, limit))
-        })
-        .collect::<Vec<_>>();
+    let outputs = run_searches_parallel(
+        cli,
+        query,
+        limit,
+        &[search_bing, search_brave, search_duckduckgo],
+    );
     let mut candidates = Vec::new();
     let mut pages = Vec::new();
-    for handle in handles {
-        if let Ok(Ok(out)) = handle.join() {
-            pages.push(out.page);
-            candidates.extend(out.results);
-        }
+    for out in outputs {
+        pages.push(out.page);
+        candidates.extend(out.results);
     }
     if candidates.is_empty() {
         return Err(anyhow!("all search engines failed"));
@@ -532,6 +575,30 @@ fn search_all(cli: &Cli, query: &str, limit: usize) -> Result<SearchOutput> {
         count: results.len(),
         results,
     })
+}
+
+fn run_searches_parallel(
+    cli: &Cli,
+    query: &str,
+    limit: usize,
+    searches: &[fn(&Cli, &str, usize) -> Result<SearchOutput>],
+) -> Vec<SearchOutput> {
+    let handles = searches
+        .iter()
+        .copied()
+        .map(|search_fn| {
+            let cli = cli.clone();
+            let query = query.to_string();
+            thread::spawn(move || search_fn(&cli, &query, limit))
+        })
+        .collect::<Vec<_>>();
+    handles
+        .into_iter()
+        .filter_map(|handle| match handle.join() {
+            Ok(Ok(out)) => Some(out),
+            _ => None,
+        })
+        .collect()
 }
 
 fn tag_sources(results: &mut [SearchResult], source: &str) {

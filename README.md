@@ -9,7 +9,7 @@ It is a pure command-line tool. No MCP server is embedded.
 - Read pages through Chrome Readability.
 - Extract visible text from a CSS selector.
 - Search with Bing browser form flow, Brave, and DuckDuckGo Lite.
-- Merge and rerank results from all engines in auto mode.
+- Use fast adaptive auto search, with exhaustive merged search available as `--engine all`.
 - Fetch full content for search results with bounded parallel reads.
 - Run local benchmark cases and emit JSONL metrics.
 
