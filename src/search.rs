@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use sha1::{Digest, Sha1};
 use std::collections::HashMap;
 use std::thread;
@@ -6,7 +6,9 @@ use std::time::Instant;
 use url::Url;
 
 use crate::chrome::{chrome_base, chrome_base_stealth, goto, page_html, page_name, run_cmd};
-use crate::parsers::{parse_bing_html, parse_brave_html, parse_duckduckgo_lite_html};
+use crate::parsers::{
+    parse_bing_html, parse_brave_html, parse_duckduckgo_lite_html, parse_searxng_html,
+};
 use crate::scoring::assess_quality;
 use crate::types::{SearchOutput, SearchResult};
 use crate::{Cli, Engine};
@@ -18,6 +20,7 @@ pub(crate) fn search(cli: &Cli, query: &str, limit: usize, engine: Engine) -> Re
         Engine::Bing => search_bing(cli, query, limit),
         Engine::Brave => search_brave(cli, query, limit),
         Engine::Duckduckgo => search_duckduckgo(cli, query, limit),
+        Engine::Searxng => search_searxng(cli, query, limit),
         Engine::Auto => search_auto(cli, query, limit),
         Engine::All => search_all(cli, query, limit),
     }
@@ -25,6 +28,17 @@ pub(crate) fn search(cli: &Cli, query: &str, limit: usize, engine: Engine) -> Re
 
 fn search_auto(cli: &Cli, query: &str, limit: usize) -> Result<SearchOutput> {
     let start = Instant::now();
+    if cli.searxng.is_some()
+        && let Ok(out) = search_searxng(cli, query, limit)
+        && !out.results.is_empty()
+        && assess_quality(&out.results, query) >= 0.55
+    {
+        return Ok(SearchOutput {
+            engine: "auto".to_string(),
+            seconds: start.elapsed().as_secs_f64(),
+            ..out
+        });
+    }
     let fast = run_searches_parallel(
         cli,
         query,
@@ -84,6 +98,7 @@ fn search_all(cli: &Cli, query: &str, limit: usize) -> Result<SearchOutput> {
         query,
         limit,
         &[
+            ("searxng", search_searxng),
             ("bing", search_bing),
             ("brave", search_brave),
             ("duckduckgo", search_duckduckgo),
@@ -218,6 +233,37 @@ fn canonical_url(raw: &str) -> String {
         out.pop();
     }
     out.to_lowercase()
+}
+
+fn search_searxng(cli: &Cli, query: &str, limit: usize) -> Result<SearchOutput> {
+    let Some(base) = cli.searxng.as_deref() else {
+        bail!("--engine searxng requires --searxng <base-url>");
+    };
+    let start = Instant::now();
+    let base = base.trim_end_matches('/');
+    let page = page_name("searxng", query);
+    let url = format!("{}/search?q={}", base, urlencoding::encode(query));
+    goto(cli, &page, &url)?;
+    let mut wait_cmd = chrome_base(cli, &page);
+    wait_cmd
+        .arg("wait")
+        .arg("selector")
+        .arg("article.result")
+        .arg("--timeout")
+        .arg(cli.wait_timeout.to_string());
+    let _ = run_cmd(wait_cmd, cli.command_timeout);
+    let html = page_html(cli, &page, false)?;
+    let mut results = parse_searxng_html(&html, limit);
+    tag_sources(&mut results, "searxng");
+    Ok(SearchOutput {
+        ok: true,
+        query: query.to_string(),
+        engine: "searxng".to_string(),
+        page,
+        seconds: start.elapsed().as_secs_f64(),
+        count: results.len(),
+        results,
+    })
 }
 
 fn search_duckduckgo(cli: &Cli, query: &str, limit: usize) -> Result<SearchOutput> {

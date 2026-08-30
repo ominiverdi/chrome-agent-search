@@ -61,6 +61,15 @@ Default `auto` is best for normal use:
 chrome-agent-search search 'query' --engine auto
 ```
 
+Use local SearXNG when available:
+
+```bash
+chrome-agent-search --searxng http://search.home search 'query' --engine searxng
+chrome-agent-search --searxng http://search.home search 'query' --engine auto
+```
+
+With `--searxng`, `auto` tries SearXNG first and falls back to browser engines.
+
 Use `all` for exhaustive diagnostics or quality checks:
 
 ```bash
@@ -73,6 +82,7 @@ Specific engines:
 chrome-agent-search search 'query' --engine bing
 chrome-agent-search search 'query' --engine brave
 chrome-agent-search search 'query' --engine duckduckgo
+chrome-agent-search --searxng http://search.home search 'query' --engine searxng
 ```
 
 ## Reading failures and diagnosis
@@ -181,6 +191,7 @@ chrome-agent-search --command-timeout 30 --wait-timeout 3 bench --cases benchmar
 - Use `diagnose` before declaring a blocked or unreadable page empty.
 - Reuse the same `--browser` profile for multi-step sessions.
 - Keep headed challenge/login sessions open while reusing them from CLI calls.
+- Prefer `--searxng <base-url>` when a local SearXNG instance is available.
 - Use `--engine all` only when quality/diagnostics matter more than latency.
 - Do not solve CAPTCHA automatically.
 - Do not claim a source was read unless the command returned content supporting it.

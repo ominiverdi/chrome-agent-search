@@ -66,8 +66,11 @@ chrome-agent-search --browser research search 'query'
 chrome-agent-search --stealth search 'query'
 chrome-agent-search --copy-cookies read 'https://example.com/account'
 chrome-agent-search --proxy-server socks5://127.0.0.1:9050 search 'query'
+chrome-agent-search --searxng http://search.home search 'query' --engine searxng
 chrome-agent-search --connect http://127.0.0.1:9222 read 'https://example.com'
 ```
+
+`--searxng` is a SearXNG-compatible base URL. CAS builds the `/search?q=...` URL itself.
 
 `--proxy-server` only works when `chrome-agent` starts the managed browser. If you use `--connect`, start that browser with its proxy settings yourself.
 

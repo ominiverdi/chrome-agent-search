@@ -46,6 +46,13 @@ pub(crate) struct Cli {
     #[arg(long, global = true)]
     pub(crate) proxy_server: Option<String>,
 
+    #[arg(
+        long,
+        global = true,
+        help = "SearXNG-compatible base URL, e.g. http://search.home"
+    )]
+    pub(crate) searxng: Option<String>,
+
     #[arg(long, default_value_t = 30, global = true)]
     pub(crate) chrome_timeout: u64,
 
@@ -123,6 +130,7 @@ pub(crate) enum Engine {
     Bing,
     Brave,
     Duckduckgo,
+    Searxng,
 }
 
 fn main() -> Result<()> {

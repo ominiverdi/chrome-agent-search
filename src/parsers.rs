@@ -124,6 +124,38 @@ pub(crate) fn parse_bing_html(html: &str, limit: usize) -> Vec<SearchResult> {
     results
 }
 
+pub(crate) fn parse_searxng_html(html: &str, limit: usize) -> Vec<SearchResult> {
+    let doc = Html::parse_document(html);
+    let item_sel = selector("article.result");
+    let title_link_sel = selector("h3 a[href]");
+    let snippet_sel = selector("p.content");
+    let mut results = Vec::new();
+    for item in doc.select(&item_sel) {
+        let Some(a) = item.select(&title_link_sel).find(|a| {
+            a.value()
+                .attr("href")
+                .unwrap_or_default()
+                .starts_with("http")
+        }) else {
+            continue;
+        };
+        let title = element_text(a);
+        let url = a.value().attr("href").unwrap_or_default().to_string();
+        let snippet = item
+            .select(&snippet_sel)
+            .map(element_text)
+            .find(|text| !text.is_empty())
+            .unwrap_or_default();
+        if !title.is_empty() {
+            results.push(SearchResult::new(title, url, snippet));
+        }
+        if results.len() >= limit {
+            break;
+        }
+    }
+    results
+}
+
 pub(crate) fn parse_brave_html(html: &str, limit: usize) -> Vec<SearchResult> {
     let doc = Html::parse_document(html);
     let item_sel = selector("[data-type=web]");
@@ -231,6 +263,24 @@ mod tests {
         );
         assert_eq!(results[0].url, target);
         assert!(results[0].snippet.contains("caution"));
+    }
+
+    #[test]
+    fn searxng_parser_extracts_title_snippet_and_url() {
+        let html = r#"
+        <html><body>
+          <article class="result result-default category-general">
+            <a href="https://rust-lang.org/" class="url_header">https://rust-lang.org</a>
+            <h3><a href="https://rust-lang.org/" target="_blank" rel="noopener noreferrer"><span class="highlight">Rust</span> Programming Language</a></h3>
+            <p class="content">A language empowering everyone to build reliable and efficient software.</p>
+          </article>
+        </body></html>
+        "#;
+        let results = parse_searxng_html(html, 5);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "Rust Programming Language");
+        assert_eq!(results[0].url, "https://rust-lang.org/");
+        assert!(results[0].snippet.contains("reliable and efficient"));
     }
 
     #[test]
