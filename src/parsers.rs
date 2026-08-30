@@ -78,11 +78,7 @@ pub(crate) fn parse_duckduckgo_lite_html(html: &str, limit: usize) -> Vec<Search
                 break;
             }
         }
-        results.push(SearchResult {
-            title,
-            url,
-            snippet,
-        });
+        results.push(SearchResult::new(title, url, snippet));
         if results.len() >= limit {
             break;
         }
@@ -120,11 +116,7 @@ pub(crate) fn parse_bing_html(html: &str, limit: usize) -> Vec<SearchResult> {
             .map(element_text)
             .find(|text| !text.is_empty())
             .unwrap_or_default();
-        results.push(SearchResult {
-            title,
-            url,
-            snippet,
-        });
+        results.push(SearchResult::new(title, url, snippet));
         if results.len() >= limit {
             break;
         }
@@ -183,11 +175,7 @@ pub(crate) fn parse_brave_html(html: &str, limit: usize) -> Vec<SearchResult> {
             })
             .unwrap_or_default();
         if !title.is_empty() {
-            results.push(SearchResult {
-                title,
-                url,
-                snippet,
-            });
+            results.push(SearchResult::new(title, url, snippet));
         }
         if results.len() >= limit {
             break;

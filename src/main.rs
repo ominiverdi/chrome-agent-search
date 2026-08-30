@@ -2,10 +2,12 @@ use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
+use std::collections::HashMap;
 use std::fs;
 use std::process::Command;
 use std::thread;
 use std::time::Instant;
+use url::Url;
 
 mod parsers;
 mod scoring;
@@ -89,6 +91,7 @@ enum Commands {
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum Engine {
     Auto,
+    All,
     Bing,
     Brave,
     Duckduckgo,
@@ -110,6 +113,19 @@ struct SearchResult {
     title: String,
     url: String,
     snippet: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    sources: Vec<String>,
+}
+
+impl SearchResult {
+    fn new(title: String, url: String, snippet: String) -> Self {
+        Self {
+            title,
+            url,
+            snippet,
+            sources: Vec::new(),
+        }
+    }
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -128,6 +144,8 @@ struct FullResult {
     title: String,
     url: String,
     snippet: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    sources: Vec<String>,
     fetch_status: String,
     content: Option<String>,
     error: Option<String>,
@@ -372,6 +390,7 @@ fn read_results_concurrently(
                         title: item.title,
                         url: item.url,
                         snippet: item.snippet,
+                        sources: item.sources,
                         fetch_status: "success".to_string(),
                         content: Some(read.text),
                         error: None,
@@ -380,6 +399,7 @@ fn read_results_concurrently(
                         title: item.title,
                         url: item.url,
                         snippet: item.snippet,
+                        sources: item.sources,
                         fetch_status: "error".to_string(),
                         content: None,
                         error: Some(err.to_string()),
@@ -394,6 +414,7 @@ fn read_results_concurrently(
                     title: "thread panic".to_string(),
                     url: String::new(),
                     snippet: String::new(),
+                    sources: Vec::new(),
                     fetch_status: "error".to_string(),
                     content: None,
                     error: Some("reader thread panicked".to_string()),
@@ -409,25 +430,127 @@ fn search(cli: &Cli, query: &str, limit: usize, engine: Engine) -> Result<Search
         Engine::Bing => search_bing(cli, query, limit),
         Engine::Brave => search_brave(cli, query, limit),
         Engine::Duckduckgo => search_duckduckgo(cli, query, limit),
-        Engine::Auto => {
-            let mut candidates = Vec::new();
-            if let Ok(out) = search_bing(cli, query, limit) {
-                candidates.push(out);
-            }
-            if let Ok(out) = search_brave(cli, query, limit) {
-                candidates.push(out);
-            }
-            if let Ok(out) = search_duckduckgo(cli, query, limit) {
-                candidates.push(out);
-            }
-            candidates
-                .into_iter()
-                .max_by(|a, b| {
-                    assess_quality(&a.results, query).total_cmp(&assess_quality(&b.results, query))
-                })
-                .ok_or_else(|| anyhow!("all search engines failed"))
+        Engine::Auto | Engine::All => search_all(cli, query, limit),
+    }
+}
+
+fn search_all(cli: &Cli, query: &str, limit: usize) -> Result<SearchOutput> {
+    let start = Instant::now();
+    let query_owned = query.to_string();
+    let searches: [fn(&Cli, &str, usize) -> Result<SearchOutput>; 3] =
+        [search_bing, search_brave, search_duckduckgo];
+    let handles = searches
+        .into_iter()
+        .map(|search_fn| {
+            let cli = cli.clone();
+            let query = query_owned.clone();
+            thread::spawn(move || search_fn(&cli, &query, limit))
+        })
+        .collect::<Vec<_>>();
+    let mut candidates = Vec::new();
+    let mut pages = Vec::new();
+    for handle in handles {
+        if let Ok(Ok(out)) = handle.join() {
+            pages.push(out.page);
+            candidates.extend(out.results);
         }
     }
+    if candidates.is_empty() {
+        return Err(anyhow!("all search engines failed"));
+    }
+    let results = merge_results(candidates, query, limit);
+    Ok(SearchOutput {
+        ok: true,
+        query: query.to_string(),
+        engine: "all".to_string(),
+        page: pages.join(","),
+        seconds: start.elapsed().as_secs_f64(),
+        count: results.len(),
+        results,
+    })
+}
+
+fn tag_sources(results: &mut [SearchResult], source: &str) {
+    for result in results {
+        if !result.sources.iter().any(|existing| existing == source) {
+            result.sources.push(source.to_string());
+        }
+    }
+}
+
+fn merge_results(results: Vec<SearchResult>, query: &str, limit: usize) -> Vec<SearchResult> {
+    let mut merged: HashMap<String, (SearchResult, f64)> = HashMap::new();
+    let mut source_ranks: HashMap<String, usize> = HashMap::new();
+    for mut result in results {
+        let source = result
+            .sources
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "unknown".to_string());
+        let rank = source_ranks.entry(source).or_insert(0);
+        *rank += 1;
+        let key = canonical_url(&result.url);
+        let rank_weight = 1.0 / *rank as f64;
+        let entry = merged.entry(key).or_insert_with(|| (result.clone(), 0.0));
+        entry.1 += rank_weight;
+        for source in result.sources.drain(..) {
+            if !entry.0.sources.contains(&source) {
+                entry.0.sources.push(source);
+            }
+        }
+        if result.title.len() > entry.0.title.len() {
+            entry.0.title = result.title;
+        }
+        if result.snippet.len() > entry.0.snippet.len() {
+            entry.0.snippet = result.snippet;
+        }
+    }
+    let mut scored: Vec<(SearchResult, f64)> = merged
+        .into_values()
+        .map(|(result, agreement)| {
+            let quality = assess_quality(std::slice::from_ref(&result), query);
+            let source_bonus = (result.sources.len().saturating_sub(1) as f64) * 0.15;
+            let score = quality + source_bonus + agreement.min(1.0) * 0.1;
+            (result, score)
+        })
+        .collect();
+    scored.sort_by(|a, b| b.1.total_cmp(&a.1));
+    scored
+        .into_iter()
+        .map(|(result, _)| result)
+        .take(limit)
+        .collect()
+}
+
+fn canonical_url(raw: &str) -> String {
+    let Ok(mut url) = Url::parse(raw) else {
+        return raw.trim_end_matches('/').to_lowercase();
+    };
+    url.set_fragment(None);
+    let tracking_prefixes = ["utm_", "fbclid", "gclid", "mc_cid", "mc_eid", "igshid"];
+    let kept: Vec<(String, String)> = url
+        .query_pairs()
+        .filter(|(key, _)| {
+            !tracking_prefixes
+                .iter()
+                .any(|prefix| key.starts_with(prefix))
+        })
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect();
+    url.set_query(None);
+    if !kept.is_empty() {
+        let query = kept
+            .into_iter()
+            .map(|(key, value)| format!("{}={}", key, value))
+            .collect::<Vec<_>>()
+            .join("&");
+        url.set_query(Some(&query));
+    }
+    let mut out = url.to_string();
+    if out.ends_with('/') {
+        out.pop();
+    }
+    out.to_lowercase()
 }
 
 fn search_duckduckgo(cli: &Cli, query: &str, limit: usize) -> Result<SearchOutput> {
@@ -449,7 +572,8 @@ fn search_duckduckgo(cli: &Cli, query: &str, limit: usize) -> Result<SearchOutpu
         .arg("5");
     let _ = run(wait_cmd);
     let html = page_html(cli, &page, true)?;
-    let results = parse_duckduckgo_lite_html(&html, limit);
+    let mut results = parse_duckduckgo_lite_html(&html, limit);
+    tag_sources(&mut results, "duckduckgo");
     Ok(SearchOutput {
         ok: true,
         query: query.to_string(),
@@ -480,7 +604,8 @@ fn search_brave(cli: &Cli, query: &str, limit: usize) -> Result<SearchOutput> {
         .arg("5");
     let _ = run(wait_cmd);
     let html = page_html(cli, &page, true)?;
-    let results = parse_brave_html(&html, limit);
+    let mut results = parse_brave_html(&html, limit);
+    tag_sources(&mut results, "brave");
     Ok(SearchOutput {
         ok: true,
         query: query.to_string(),
@@ -557,6 +682,7 @@ fn search_bing_homepage(
     if results.is_empty() {
         results = parse_bing_text_fallback(cli, &page, limit)?;
     }
+    tag_sources(&mut results, "bing");
     Ok((page, results))
 }
 
@@ -582,6 +708,7 @@ fn search_bing_direct(cli: &Cli, query: &str, limit: usize) -> Result<(String, V
     if results.is_empty() {
         results = parse_bing_text_fallback(cli, &page, limit)?;
     }
+    tag_sources(&mut results, "bing");
     Ok((page, results))
 }
 
@@ -613,11 +740,7 @@ fn parse_bing_text_fallback(cli: &Cli, page: &str, limit: usize) -> Result<Vec<S
             let url = lines[i + 1].replace(" › ", "/").replace(' ', "");
             let snippet = lines.get(i + 3).unwrap_or(&"").to_string();
             if !title.is_empty() && !url.contains("bing.com") {
-                out.push(SearchResult {
-                    title,
-                    url,
-                    snippet,
-                });
+                out.push(SearchResult::new(title, url, snippet));
                 i += 4;
                 continue;
             }
@@ -1108,18 +1231,43 @@ mod tests {
     }
 
     #[test]
+    fn merged_results_dedupe_sources_and_keep_best_snippet() {
+        let results = vec![
+            SearchResult {
+                title: "Short".to_string(),
+                url: "https://example.com/article?utm_source=x#section".to_string(),
+                snippet: "short".to_string(),
+                sources: vec!["bing".to_string()],
+            },
+            SearchResult {
+                title: "Better title about Rust and Linux".to_string(),
+                url: "https://example.com/article".to_string(),
+                snippet: "A longer snippet about Rust in the Linux kernel".to_string(),
+                sources: vec!["duckduckgo".to_string()],
+            },
+        ];
+        let merged = merge_results(results, "Rust Linux", 5);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(
+            merged[0].url,
+            "https://example.com/article?utm_source=x#section"
+        );
+        assert_eq!(merged[0].sources, vec!["bing", "duckduckgo"]);
+        assert!(merged[0].snippet.contains("Linux kernel"));
+    }
+
+    #[test]
     fn quality_scoring_prefers_specific_results() {
-        let good = vec![SearchResult {
-            title: "Speed is no longer a selling point for AI agents, caution is - TNW".to_string(),
-            url: "https://thenextweb.com/news/speed-not-selling-point-ai-agents-caution"
-                .to_string(),
-            snippet: "AI agents need a cautious pause.".to_string(),
-        }];
-        let weak = vec![SearchResult {
-            title: "AI news".to_string(),
-            url: "https://example.com/ai".to_string(),
-            snippet: "General technology news.".to_string(),
-        }];
+        let good = vec![SearchResult::new(
+            "Speed is no longer a selling point for AI agents, caution is - TNW".to_string(),
+            "https://thenextweb.com/news/speed-not-selling-point-ai-agents-caution".to_string(),
+            "AI agents need a cautious pause.".to_string(),
+        )];
+        let weak = vec![SearchResult::new(
+            "AI news".to_string(),
+            "https://example.com/ai".to_string(),
+            "General technology news.".to_string(),
+        )];
         let query = "site:thenextweb.com/news speed no longer selling point AI agents caution";
         assert!(assess_quality(&good, query) > assess_quality(&weak, query));
     }
