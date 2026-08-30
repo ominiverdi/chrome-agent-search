@@ -118,7 +118,7 @@ pub(crate) fn read_url(cli: &Cli, url: &str, max_chars: usize) -> Result<TimedTe
     let start = Instant::now();
     let mut cmd = chrome_base(cli, &page);
     cmd.arg("read").arg("--truncate").arg(max_chars.to_string());
-    let text = run_cmd(cmd, cli.command_timeout)?;
+    let text = run_cmd(cmd, cli.command_timeout).map_err(improve_read_error)?;
     Ok(TimedText {
         ok: true,
         url: url.to_string(),
@@ -128,6 +128,17 @@ pub(crate) fn read_url(cli: &Cli, url: &str, max_chars: usize) -> Result<TimedTe
         text_chars: text.len(),
         text,
     })
+}
+
+fn improve_read_error(err: anyhow::Error) -> anyhow::Error {
+    let message = err.to_string();
+    if message.contains("Page has minimal readable content") {
+        anyhow!(
+            "readability_minimal_content: Chrome Readability could not extract main content. The page may be non-article content, a login/consent page, or a human-verification/block page. Try `text --selector body` or retry with `--headed` using the same `--browser` profile."
+        )
+    } else {
+        err
+    }
 }
 
 pub(crate) fn text_url(
