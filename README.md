@@ -29,7 +29,7 @@ Early prototype.
 
 - `read` is useful now for direct URL reading via Chrome Readability.
 - `text` is useful now for selector-scoped visible text.
-- `search` uses auto engine selection: Bing first, then Brave with stealth when Bing quality is low.
+- `search` uses auto engine selection: Bing first, Brave with stealth when Bing quality is low, DuckDuckGo as last fallback.
 - `full` composes `search` + `read`.
 
 ## Requirements

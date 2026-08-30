@@ -62,6 +62,7 @@ enum Engine {
     Auto,
     Bing,
     Brave,
+    Duckduckgo,
 }
 
 #[derive(Serialize)]
@@ -288,28 +289,84 @@ fn search(cli: &Cli, query: &str, limit: usize, engine: Engine) -> Result<Search
     match engine {
         Engine::Bing => search_bing(cli, query, limit),
         Engine::Brave => search_brave(cli, query, limit),
+        Engine::Duckduckgo => search_duckduckgo(cli, query, limit),
         Engine::Auto => {
-            let bing = search_bing(cli, query, limit).ok();
-            if let Some(ref out) = bing {
+            let mut candidates = Vec::new();
+            if let Ok(out) = search_bing(cli, query, limit) {
                 if assess_quality(&out.results, query) >= 0.8 {
-                    return Ok(out.clone());
+                    return Ok(out);
                 }
+                candidates.push(out);
             }
-            let brave = search_brave(cli, query, limit).ok();
-            match (bing, brave) {
-                (Some(b), Some(r)) => {
-                    if assess_quality(&r.results, query) > assess_quality(&b.results, query) {
-                        Ok(r)
-                    } else {
-                        Ok(b)
-                    }
+            if let Ok(out) = search_brave(cli, query, limit) {
+                if assess_quality(&out.results, query) >= 0.8 {
+                    return Ok(out);
                 }
-                (Some(b), None) => Ok(b),
-                (None, Some(r)) => Ok(r),
-                (None, None) => Err(anyhow!("all search engines failed")),
+                candidates.push(out);
             }
+            if let Ok(out) = search_duckduckgo(cli, query, limit) {
+                candidates.push(out);
+            }
+            candidates
+                .into_iter()
+                .max_by(|a, b| {
+                    assess_quality(&a.results, query).total_cmp(&assess_quality(&b.results, query))
+                })
+                .ok_or_else(|| anyhow!("all search engines failed"))
         }
     }
+}
+
+fn search_duckduckgo(cli: &Cli, query: &str, limit: usize) -> Result<SearchOutput> {
+    let page = page_name("duckduckgo", query);
+    let url = format!(
+        "https://html.duckduckgo.com/html/?q={}",
+        urlencoding::encode(query)
+    );
+    let start = Instant::now();
+    let mut goto_cmd = chrome_base_stealth(cli, &page);
+    goto_cmd.arg("goto").arg(&url);
+    run(goto_cmd)?;
+    let mut wait_cmd = chrome_base_stealth(cli, &page);
+    wait_cmd
+        .arg("wait")
+        .arg("selector")
+        .arg(".result, .result__title")
+        .arg("--timeout")
+        .arg("5");
+    let _ = run(wait_cmd);
+    let script = r#"
+JSON.stringify([...document.querySelectorAll('.result')].map(el => {
+  function cleanUrl(href) {
+    try {
+      const u = new URL(href, location.href);
+      const uddg = u.searchParams.get('uddg');
+      if (uddg) return decodeURIComponent(uddg);
+      return u.href;
+    } catch { return href; }
+  }
+  const a = el.querySelector('.result__title a, a.result__a, a[href]');
+  const title = (a?.textContent || '').replace(/\s+/g, ' ').trim();
+  const url = cleanUrl(a?.href || '');
+  const snippet = (el.querySelector('.result__snippet, .result__body, .result__extras')?.textContent || '').replace(/\s+/g, ' ').trim();
+  return { title, url, snippet };
+}).filter(r => r.title && r.url && !r.url.includes('duckduckgo.com')).slice(0, 20))
+"#;
+    let mut cmd = chrome_base_stealth(cli, &page);
+    cmd.arg("eval").arg(script);
+    let raw = run(cmd)?;
+    let decoded = serde_json::from_str::<String>(&raw).unwrap_or(raw);
+    let mut results: Vec<SearchResult> = serde_json::from_str(&decoded).unwrap_or_default();
+    results.truncate(limit);
+    Ok(SearchOutput {
+        ok: true,
+        query: query.to_string(),
+        engine: "duckduckgo".to_string(),
+        page,
+        seconds: start.elapsed().as_secs_f64(),
+        count: results.len(),
+        results,
+    })
 }
 
 fn search_brave(cli: &Cli, query: &str, limit: usize) -> Result<SearchOutput> {
