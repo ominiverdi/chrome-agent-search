@@ -76,3 +76,15 @@ pub(crate) struct CleanupOutput {
     pub(crate) ok: bool,
     pub(crate) records: Vec<CleanupRecord>,
 }
+
+#[derive(Serialize)]
+pub(crate) struct DiagnoseOutput {
+    pub(crate) ok: bool,
+    pub(crate) requested_url: String,
+    pub(crate) final_url: Option<String>,
+    pub(crate) redirected: Option<bool>,
+    pub(crate) http_status: Option<u16>,
+    pub(crate) title: Option<String>,
+    pub(crate) snapshot_excerpt: Option<String>,
+    pub(crate) hint: String,
+}

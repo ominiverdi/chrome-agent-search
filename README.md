@@ -37,6 +37,7 @@ See [`INSTALL.md`](INSTALL.md) for package/release install details.
 chrome-agent-search read 'https://example.com/article'
 chrome-agent-search text 'https://example.com/page' --selector article
 chrome-agent-search search 'query' --limit 5
+chrome-agent-search diagnose 'https://example.com/page'
 chrome-agent-search full 'query' --limit 3 --max-chars 8000 --concurrency 3
 chrome-agent-search bench --cases benchmarks/cases.toml --concurrency 3
 chrome-agent-search cleanup --purge-orphans
@@ -65,7 +66,7 @@ chrome-agent-search --stealth search 'query'
 chrome-agent-search --copy-cookies read 'https://example.com/account'
 chrome-agent-search --proxy-server socks5://127.0.0.1:9050 search 'query'
 chrome-agent-search --headed --connect http://127.0.0.1:9222 read 'https://example.com'
-chrome-agent-search --chrome-timeout 20 --command-timeout 30 --wait-timeout 5 search 'query'
+chrome-agent-search --chrome-timeout 20 --command-timeout 30 --wait-timeout 5 diagnose 'https://example.com'
 chrome-agent-search full 'query' --read-timeout 20 --concurrency 3
 ```
 
@@ -103,3 +104,7 @@ cargo build --release
 ```
 
 See [`BENCHMARKS.md`](BENCHMARKS.md) for methodology, comparison details, and caveats.
+
+## Agent skill
+
+Agent instructions live in [`skills/chrome-agent-search/SKILL.md`](skills/chrome-agent-search/SKILL.md).

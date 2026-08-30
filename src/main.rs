@@ -12,10 +12,10 @@ mod search;
 mod types;
 
 use bench::run_bench;
-use chrome::{read_url, text_url};
+use chrome::{diagnose_url, read_url, text_url};
 use cleanup::cleanup;
 use full::full_search;
-use output::{print_cleanup, print_full, print_read, print_search};
+use output::{print_cleanup, print_diagnose, print_full, print_read, print_search};
 use search::search;
 
 #[derive(Parser, Debug, Clone)]
@@ -79,6 +79,9 @@ enum Commands {
         limit: usize,
         #[arg(long, value_enum, default_value_t = Engine::Auto)]
         engine: Engine,
+    },
+    Diagnose {
+        url: String,
     },
     Full {
         query: String,
@@ -149,6 +152,10 @@ fn main() -> Result<()> {
         } => {
             let out = search(&cli, query, *limit, *engine)?;
             print_search(&out, cli.json)?;
+        }
+        Commands::Diagnose { url } => {
+            let out = diagnose_url(&cli, url)?;
+            print_diagnose(&out, cli.json)?;
         }
         Commands::Full {
             query,

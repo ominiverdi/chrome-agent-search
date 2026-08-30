@@ -7,7 +7,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use wait_timeout::ChildExt;
 
 use crate::Cli;
-use crate::types::TimedText;
+use crate::types::{DiagnoseOutput, TimedText};
 
 pub(crate) fn chrome_base(cli: &Cli, page: &str) -> Command {
     chrome_base_inner(cli, page, cli.stealth)
@@ -110,6 +110,72 @@ pub(crate) fn page_html(cli: &Cli, page: &str, stealth: bool) -> Result<String> 
     cmd.arg("eval").arg("document.documentElement.outerHTML");
     let raw = run_cmd(cmd, cli.command_timeout)?;
     Ok(serde_json::from_str::<String>(&raw).unwrap_or(raw))
+}
+
+pub(crate) fn diagnose_url(cli: &Cli, url: &str) -> Result<DiagnoseOutput> {
+    let page = page_name("diagnose", url);
+    let mut cmd = chrome_base(cli, &page);
+    cmd.arg("--json").arg("goto").arg(url).arg("--inspect");
+    let raw = run_cmd(cmd, cli.command_timeout)?;
+    let json: serde_json::Value = serde_json::from_str(&raw).context("parse chrome-agent JSON")?;
+    let landed = json.get("landed");
+    let final_url = landed
+        .and_then(|v| v.get("final"))
+        .and_then(|v| v.as_str())
+        .map(ToString::to_string);
+    let redirected = landed
+        .and_then(|v| v.get("redirected"))
+        .and_then(|v| v.as_bool());
+    let http_status = landed
+        .and_then(|v| v.get("http_status"))
+        .and_then(|v| v.as_u64())
+        .and_then(|v| u16::try_from(v).ok());
+    let title = json
+        .get("title")
+        .and_then(|v| v.as_str())
+        .filter(|v| !v.is_empty())
+        .map(ToString::to_string);
+    let snapshot_excerpt = json
+        .get("snapshot")
+        .and_then(|v| v.as_str())
+        .map(|snapshot| snapshot.chars().take(500).collect::<String>());
+    let hint = diagnose_hint(
+        http_status,
+        redirected,
+        title.as_deref(),
+        snapshot_excerpt.as_deref(),
+    );
+    Ok(DiagnoseOutput {
+        ok: true,
+        requested_url: url.to_string(),
+        final_url,
+        redirected,
+        http_status,
+        title,
+        snapshot_excerpt,
+        hint,
+    })
+}
+
+fn diagnose_hint(
+    http_status: Option<u16>,
+    redirected: Option<bool>,
+    title: Option<&str>,
+    snapshot: Option<&str>,
+) -> String {
+    let title = title.unwrap_or_default().to_lowercase();
+    let snapshot = snapshot.unwrap_or_default().to_lowercase();
+    if http_status.map(|status| status >= 400).unwrap_or(false)
+        || title.contains("human")
+        || snapshot.contains("blocked")
+        || snapshot.contains("captcha")
+    {
+        "The page may be blocked, protected, or requiring human verification. Try --headed or --connect with a real Chrome, complete any visible step manually, keep that browser open, then retry with the same --browser profile.".to_string()
+    } else if redirected.unwrap_or(false) {
+        "The page redirected before content was read. If it redirected to login or consent, open with --headed, complete the step manually, keep the browser open, then retry with the same --browser profile.".to_string()
+    } else {
+        "The page loaded. If read still fails, it may not be article-like; try text --selector body or inspect the page manually.".to_string()
+    }
 }
 
 pub(crate) fn read_url(cli: &Cli, url: &str, max_chars: usize) -> Result<TimedText> {

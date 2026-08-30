@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::types::{CleanupOutput, FullOutput, SearchOutput, TimedText};
+use crate::types::{CleanupOutput, DiagnoseOutput, FullOutput, SearchOutput, TimedText};
 
 pub(crate) fn print_read(out: &TimedText, json: bool) -> Result<()> {
     if json {
@@ -29,6 +29,31 @@ pub(crate) fn print_cleanup(out: &CleanupOutput, json: bool) -> Result<()> {
                 );
             }
         }
+    }
+    Ok(())
+}
+
+pub(crate) fn print_diagnose(out: &DiagnoseOutput, json: bool) -> Result<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(out)?);
+    } else {
+        println!("URL: {}", out.requested_url);
+        if let Some(final_url) = &out.final_url {
+            println!("Final URL: {final_url}");
+        }
+        if let Some(status) = out.http_status {
+            println!("HTTP status: {status}");
+        }
+        if let Some(redirected) = out.redirected {
+            println!("Redirected: {redirected}");
+        }
+        if let Some(title) = &out.title {
+            println!("Title: {title}");
+        }
+        if let Some(snapshot) = &out.snapshot_excerpt {
+            println!("\nSnapshot excerpt:\n{snapshot}");
+        }
+        println!("\nHint: {}", out.hint);
     }
     Ok(())
 }
