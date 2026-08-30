@@ -15,6 +15,7 @@ chrome-agent-search read 'https://example.com/article'
 chrome-agent-search text 'https://example.com/page' --selector article
 chrome-agent-search search 'query' --limit 5
 chrome-agent-search full 'query' --limit 3 --max-chars 8000
+chrome-agent-search bench --cases benchmarks/cases.toml
 ```
 
 Use `--json` for machine-readable output:
@@ -29,8 +30,9 @@ Early prototype.
 
 - `read` is useful now for direct URL reading via Chrome Readability.
 - `text` is useful now for selector-scoped visible text.
-- `search` uses auto engine selection: Bing first, Brave with stealth when Bing quality is low, DuckDuckGo as last fallback.
+- `search` supports Bing, Brave, DuckDuckGo Lite, and auto selection by result quality.
 - `full` composes `search` + `read`.
+- `bench` runs the public TOML benchmark cases and emits JSONL metrics.
 
 ## Requirements
 

@@ -1,0 +1,60 @@
+# Public smoke benchmark cases for local web search/read tools.
+# Keep cases stable, non-private, and broad enough to test real user tasks.
+
+[[cases]]
+id = "tnw-ai-agents-caution"
+kind = "search"
+query = "site:thenextweb.com/news speed no longer selling point AI agents caution"
+limit = 5
+expected_urls = ["https://thenextweb.com/news/speed-not-selling-point-ai-agents-caution"]
+expected_domains = ["thenextweb.com"]
+keywords = ["speed", "AI agents", "caution"]
+
+[[cases]]
+id = "linux-rust-greg-kh"
+kind = "search"
+query = "Linux kernel Rust Greg Kroah-Hartman"
+limit = 5
+expected_domains = ["zdnet.com", "phoronix.com", "slashdot.org"]
+keywords = ["Linux", "Rust", "Greg Kroah-Hartman"]
+
+[[cases]]
+id = "cerebras-openai-inference"
+kind = "search"
+query = "Cerebras OpenAI inference partnership"
+limit = 5
+expected_domains = ["cerebras.ai"]
+keywords = ["Cerebras", "OpenAI", "inference"]
+
+[[cases]]
+id = "quantum-light-engine"
+kind = "search"
+query = "quantum light engine atom photon thermodynamics"
+limit = 5
+keywords = ["quantum", "light", "engine", "thermodynamics"]
+
+[[cases]]
+id = "kernel-org-read"
+kind = "read"
+url = "https://www.kernel.org/"
+max_chars = 12000
+min_chars = 500
+keywords = ["Linux", "kernel", "stable"]
+
+[[cases]]
+id = "wikipedia-ai-read"
+kind = "read"
+url = "https://en.wikipedia.org/wiki/Artificial_intelligence"
+max_chars = 16000
+min_chars = 5000
+keywords = ["artificial intelligence", "machine", "intelligence"]
+
+[[cases]]
+id = "tnw-full"
+kind = "full"
+query = "site:thenextweb.com/news speed no longer selling point AI agents caution"
+limit = 3
+max_chars = 8000
+expected_urls = ["https://thenextweb.com/news/speed-not-selling-point-ai-agents-caution"]
+expected_domains = ["thenextweb.com"]
+keywords = ["AI agents", "speed", "caution"]
