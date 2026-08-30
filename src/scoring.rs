@@ -1,4 +1,4 @@
-use crate::SearchResult;
+use crate::types::SearchResult;
 
 pub(crate) fn assess_quality(results: &[SearchResult], query: &str) -> f64 {
     if results.is_empty() {
@@ -47,4 +47,26 @@ pub(crate) fn assess_quality(results: &[SearchResult], query: &str) -> f64 {
         total_weight += weight;
     }
     total / total_weight
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::SearchResult;
+
+    #[test]
+    fn quality_scoring_prefers_specific_results() {
+        let good = vec![SearchResult::new(
+            "Speed is no longer a selling point for AI agents, caution is - TNW".to_string(),
+            "https://thenextweb.com/news/speed-not-selling-point-ai-agents-caution".to_string(),
+            "AI agents need a cautious pause.".to_string(),
+        )];
+        let weak = vec![SearchResult::new(
+            "AI news".to_string(),
+            "https://example.com/ai".to_string(),
+            "General technology news.".to_string(),
+        )];
+        let query = "site:thenextweb.com/news speed no longer selling point AI agents caution";
+        assert!(assess_quality(&good, query) > assess_quality(&weak, query));
+    }
 }

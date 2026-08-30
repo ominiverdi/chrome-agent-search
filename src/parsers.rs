@@ -2,7 +2,7 @@ use base64::Engine as Base64Engine;
 use scraper::{Html, Selector};
 use url::Url;
 
-use crate::SearchResult;
+use crate::types::SearchResult;
 
 fn selector(css: &str) -> Selector {
     Selector::parse(css).expect("valid selector")
@@ -182,4 +182,81 @@ pub(crate) fn parse_brave_html(html: &str, limit: usize) -> Vec<SearchResult> {
         }
     }
     results
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn duckduckgo_lite_parser_extracts_result_and_decodes_redirect() {
+        let html = r#"
+        <html><body><table>
+          <tr><td>1.</td><td><a class="result-link" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.zdnet.com%2Farticle%2Fgreg%2Dkroah%2Dhartman%2Dlinux%2Dkernel%2Drust%2F&amp;rut=abc">'Rust makes coding fun again' - ZDNET</a></td></tr>
+          <tr><td></td><td>At Open Source Summit India, Greg Kroah-Hartman said the Linux kernel is moving toward Rust.</td></tr>
+          <tr><td></td><td>www.zdnet.com/article/greg-kroah-hartman-linux-kernel-rust/</td></tr>
+        </table></body></html>
+        "#;
+        let results = parse_duckduckgo_lite_html(html, 5);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "'Rust makes coding fun again' - ZDNET");
+        assert_eq!(
+            results[0].url,
+            "https://www.zdnet.com/article/greg-kroah-hartman-linux-kernel-rust/"
+        );
+        assert!(results[0].snippet.contains("Greg Kroah-Hartman"));
+    }
+
+    #[test]
+    fn bing_parser_prefers_title_link_and_decodes_redirect() {
+        let target = "https://thenextweb.com/news/speed-not-selling-point-ai-agents-caution";
+        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(target.as_bytes());
+        let html = format!(
+            r#"
+            <html><body><ol>
+              <li class="b_algo">
+                <div><a href="https://www.bing.com/ck/a?u=a1{}">thenextweb.com › news</a></div>
+                <h2><a href="https://www.bing.com/ck/a?u=a1{}">Speed is no longer a selling point for AI agents, caution is - TNW</a></h2>
+                <div class="b_caption"><p>AI agents need caution more than raw speed.</p></div>
+              </li>
+            </ol></body></html>
+            "#,
+            encoded, encoded
+        );
+        let results = parse_bing_html(&html, 5);
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].title,
+            "Speed is no longer a selling point for AI agents, caution is - TNW"
+        );
+        assert_eq!(results[0].url, target);
+        assert!(results[0].snippet.contains("caution"));
+    }
+
+    #[test]
+    fn brave_parser_extracts_title_snippet_and_url() {
+        let html = r#"
+        <html><body>
+          <div data-type="web">
+            <a href="https://www.zdnet.com/article/greg-kroah-hartman-linux-kernel-rust/">
+              <div class="site-name-content"><div>ZDNET</div><cite>zdnet.com › article</cite></div>
+              <div class="title search-snippet-title">'Rust makes coding fun again': Why Linux is moving away from C, according to Greg Kroah-Hartman | ZDNET</div>
+            </a>
+            <div class="generic-snippet"><div class="content">The Linux kernel is moving toward Rust, Greg Kroah-Hartman said.</div></div>
+          </div>
+        </body></html>
+        "#;
+        let results = parse_brave_html(html, 5);
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].url,
+            "https://www.zdnet.com/article/greg-kroah-hartman-linux-kernel-rust/"
+        );
+        assert!(
+            results[0]
+                .title
+                .starts_with("'Rust makes coding fun again'")
+        );
+        assert!(results[0].snippet.contains("Linux kernel"));
+    }
 }
