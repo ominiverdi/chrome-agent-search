@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 
 mod bench;
@@ -42,6 +42,9 @@ pub(crate) struct Cli {
 
     #[arg(long, global = true)]
     pub(crate) connect: Option<String>,
+
+    #[arg(long, global = true)]
+    pub(crate) proxy_server: Option<String>,
 
     #[arg(long, default_value_t = 30, global = true)]
     pub(crate) chrome_timeout: u64,
@@ -121,6 +124,11 @@ pub(crate) enum Engine {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    if cli.connect.is_some() && cli.proxy_server.is_some() {
+        bail!(
+            "--proxy-server cannot be used with --connect because proxy settings must be set when Chrome starts"
+        );
+    }
     match &cli.command {
         Commands::Read { url, max_chars } => {
             let out = read_url(&cli, url, *max_chars)?;

@@ -63,10 +63,13 @@ Browser and timeout options pass through to `chrome-agent`:
 ```sh
 chrome-agent-search --stealth search 'query'
 chrome-agent-search --copy-cookies read 'https://example.com/account'
+chrome-agent-search --proxy-server socks5://127.0.0.1:9050 search 'query'
 chrome-agent-search --headed --connect http://127.0.0.1:9222 read 'https://example.com'
 chrome-agent-search --chrome-timeout 20 --command-timeout 30 --wait-timeout 5 search 'query'
 chrome-agent-search full 'query' --read-timeout 20 --concurrency 3
 ```
+
+`--proxy-server` only works for managed browsers started by `chrome-agent`; it cannot be combined with `--connect`.
 
 Clean up managed browser sessions and profiles through `chrome-agent close`:
 

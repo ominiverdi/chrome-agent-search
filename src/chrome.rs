@@ -34,6 +34,9 @@ fn chrome_base_inner(cli: &Cli, page: &str, stealth: bool) -> Command {
     if cli.headed {
         cmd.arg("--headed");
     }
+    if let Some(proxy_server) = &cli.proxy_server {
+        cmd.arg("--proxy-server").arg(proxy_server);
+    }
     if let Some(connect) = &cli.connect {
         cmd.arg("--connect").arg(connect);
     }
