@@ -84,13 +84,22 @@ chrome-agent-search cleanup --purge-orphans
 
 ## Benchmarks
 
+The repo includes public smoke benchmarks for search, read, and full-search behavior.
+
+Latest same-environment comparison:
+
+| Tool | Cases | Pass | Avg latency |
+|---|---:|---:|---:|
+| chrome-agent-search | 19 | 19/19 | 1.375s |
+| web-search-mcp | 19 | 14/19 | 6.178s |
+
+Run the local benchmark:
+
 ```sh
 cargo build --release
 ./target/release/chrome-agent-search bench \
   --cases benchmarks/cases.toml \
-  --out benchmarks/results/local.jsonl
+  --out /tmp/chrome-agent-search-bench.jsonl
 ```
 
-Benchmarks are for local regression testing and same-environment comparisons. Search results vary by time, region, IP reputation, browser state, and engine behavior.
-
-Hard diagnostic cases live in `benchmarks/hard-cases.toml`. These are intentionally separate from the default smoke benchmark because sites such as Reddit may block automated access or return low-content pages.
+See [`BENCHMARKS.md`](BENCHMARKS.md) for methodology, comparison details, and caveats.
