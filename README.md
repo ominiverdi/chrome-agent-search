@@ -92,3 +92,5 @@ cargo build --release
 ```
 
 Benchmarks are for local regression testing and same-environment comparisons. Search results vary by time, region, IP reputation, browser state, and engine behavior.
+
+Hard diagnostic cases live in `benchmarks/hard-cases.toml`. These are intentionally separate from the default smoke benchmark because sites such as Reddit may block automated access or return low-content pages.

@@ -1,0 +1,11 @@
+# Hard/diagnostic benchmark cases for pages that often challenge extraction.
+# These are not part of the default smoke benchmark because they may fail by
+# network, region, bot-detection, login wall, or site policy.
+
+[[cases]]
+id = "reddit-wled-thread-read"
+kind = "read"
+url = "https://www.reddit.com/r/WLED/comments/rcrhsr/got_the_lower_level_done_5v_ws2812b_strips_with/"
+max_chars = 16000
+min_chars = 1000
+keywords = ["WLED", "WS2812B", "comments"]

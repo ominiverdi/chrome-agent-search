@@ -119,6 +119,30 @@ min_chars = 5000
 keywords = ["HTTP", "Semantics", "RFC 9110"]
 
 [[cases]]
+id = "hacker-news-frontpage-read"
+kind = "read"
+url = "https://news.ycombinator.com/"
+max_chars = 12000
+min_chars = 2000
+keywords = ["Hacker News", "points", "comments"]
+
+[[cases]]
+id = "github-ripgrep-issue-read"
+kind = "read"
+url = "https://github.com/BurntSushi/ripgrep/issues/1"
+max_chars = 16000
+min_chars = 1000
+keywords = ["text encodings", "UTF-8", "encoding_rs"]
+
+[[cases]]
+id = "stackoverflow-arrow-operator-read"
+kind = "read"
+url = "https://stackoverflow.com/questions/1642028/what-is-the-operator-in-c"
+max_chars = 16000
+min_chars = 1200
+keywords = ["operator", "post-decrement", "greater than"]
+
+[[cases]]
 id = "tnw-full"
 kind = "full"
 query = "site:thenextweb.com/news speed no longer selling point AI agents caution"
