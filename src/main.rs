@@ -43,7 +43,7 @@ enum Commands {
         query: String,
         #[arg(long, default_value_t = 5)]
         limit: usize,
-        #[arg(long, value_enum, default_value_t = Engine::Bing)]
+        #[arg(long, value_enum, default_value_t = Engine::Auto)]
         engine: Engine,
     },
     Full {
@@ -52,14 +52,16 @@ enum Commands {
         limit: usize,
         #[arg(long, default_value_t = 8000)]
         max_chars: usize,
-        #[arg(long, value_enum, default_value_t = Engine::Bing)]
+        #[arg(long, value_enum, default_value_t = Engine::Auto)]
         engine: Engine,
     },
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum Engine {
+    Auto,
     Bing,
+    Brave,
 }
 
 #[derive(Serialize)]
@@ -80,7 +82,7 @@ struct SearchResult {
     snippet: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone, Debug)]
 struct SearchOutput {
     ok: bool,
     query: String,
@@ -198,12 +200,20 @@ fn main() -> Result<()> {
 }
 
 fn chrome_base(cli: &Cli, page: &str) -> Command {
+    chrome_base_inner(cli, page, cli.stealth)
+}
+
+fn chrome_base_stealth(cli: &Cli, page: &str) -> Command {
+    chrome_base_inner(cli, page, true)
+}
+
+fn chrome_base_inner(cli: &Cli, page: &str, stealth: bool) -> Command {
     let mut cmd = Command::new(&cli.chrome_agent);
     cmd.arg("--browser")
         .arg(&cli.browser)
         .arg("--page")
         .arg(page);
-    if cli.stealth {
+    if stealth {
         cmd.arg("--stealth");
     }
     cmd
@@ -277,7 +287,74 @@ fn text_url(cli: &Cli, url: &str, selector: &str, max_chars: usize) -> Result<Ti
 fn search(cli: &Cli, query: &str, limit: usize, engine: Engine) -> Result<SearchOutput> {
     match engine {
         Engine::Bing => search_bing(cli, query, limit),
+        Engine::Brave => search_brave(cli, query, limit),
+        Engine::Auto => {
+            let bing = search_bing(cli, query, limit).ok();
+            if let Some(ref out) = bing {
+                if assess_quality(&out.results, query) >= 0.8 {
+                    return Ok(out.clone());
+                }
+            }
+            let brave = search_brave(cli, query, limit).ok();
+            match (bing, brave) {
+                (Some(b), Some(r)) => {
+                    if assess_quality(&r.results, query) > assess_quality(&b.results, query) {
+                        Ok(r)
+                    } else {
+                        Ok(b)
+                    }
+                }
+                (Some(b), None) => Ok(b),
+                (None, Some(r)) => Ok(r),
+                (None, None) => Err(anyhow!("all search engines failed")),
+            }
+        }
     }
+}
+
+fn search_brave(cli: &Cli, query: &str, limit: usize) -> Result<SearchOutput> {
+    let page = page_name("brave", query);
+    let url = format!(
+        "https://search.brave.com/search?q={}&source=web",
+        urlencoding::encode(query)
+    );
+    let start = Instant::now();
+    let mut goto_cmd = chrome_base_stealth(cli, &page);
+    goto_cmd.arg("goto").arg(&url);
+    run(goto_cmd)?;
+    let mut wait_cmd = chrome_base_stealth(cli, &page);
+    wait_cmd
+        .arg("wait")
+        .arg("selector")
+        .arg("[data-type=web]")
+        .arg("--timeout")
+        .arg("5");
+    let _ = run(wait_cmd);
+    let script = r#"
+JSON.stringify([...document.querySelectorAll('[data-type=web]')].map(el => {
+  const lines = (el.innerText || '').split('\n').map(s => s.trim()).filter(Boolean);
+  const link = [...el.querySelectorAll('a[href]')].find(a => a.href.startsWith('http'));
+  const url = link?.href || '';
+  const title = lines.find((line, idx) => idx > 1 && line.length > 8 && !line.includes(' › ')) || (link?.textContent || '').trim();
+  const snippet = lines.find((line, idx) => idx > 2 && line !== title && line.length > 40) || '';
+  return { title, url, snippet };
+}).filter(r => r.title && r.url && !r.url.includes('search.brave.com')).slice(0, 20))
+"#;
+    let mut cmd = chrome_base_stealth(cli, &page);
+    cmd.arg("eval").arg(script);
+    let raw = run(cmd)?;
+    let decoded = serde_json::from_str::<String>(&raw).unwrap_or(raw);
+    let mut results: Vec<SearchResult> = serde_json::from_str(&decoded).unwrap_or_default();
+    results.truncate(limit);
+    Ok(SearchOutput {
+        ok: true,
+        query: query.to_string(),
+        engine: "brave".to_string(),
+        page,
+        seconds: start.elapsed().as_secs_f64(),
+        count: results.len(),
+        results,
+    })
 }
 
 fn search_bing(cli: &Cli, query: &str, limit: usize) -> Result<SearchOutput> {
@@ -372,6 +449,46 @@ fn parse_bing_text_fallback(cli: &Cli, page: &str, limit: usize) -> Result<Vec<S
         i += 1;
     }
     Ok(out)
+}
+
+fn assess_quality(results: &[SearchResult], query: &str) -> f64 {
+    if results.is_empty() {
+        return 0.0;
+    }
+    let common = [
+        "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with", "by",
+        "is", "are", "was", "were", "be", "been", "have", "has", "had", "do", "does", "did",
+        "will", "would", "could", "should", "may", "might", "must", "can", "site",
+    ];
+    let words: Vec<String> = query
+        .to_lowercase()
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| w.len() > 2 && !common.contains(w))
+        .map(ToString::to_string)
+        .collect();
+    if words.is_empty() {
+        return 0.5;
+    }
+    let mut total = 0.0;
+    for result in results {
+        let combined = format!("{} {} {}", result.title, result.snippet, result.url).to_lowercase();
+        let keyword_matches = words
+            .iter()
+            .filter(|w| combined.contains(w.as_str()))
+            .count();
+        let mut phrase_matches = 0;
+        for pair in words.windows(2) {
+            if combined.contains(&pair.join(" ")) {
+                phrase_matches += 1;
+            }
+        }
+        if words.len() >= 3 && combined.contains(&words[..3].join(" ")) {
+            phrase_matches += 1;
+        }
+        let score = (keyword_matches as f64 / words.len() as f64) + (phrase_matches as f64 * 0.3);
+        total += score.min(1.0);
+    }
+    total / results.len() as f64
 }
 
 fn print_read(out: &TimedText, json: bool) -> Result<()> {
