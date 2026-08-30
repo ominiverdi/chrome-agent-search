@@ -34,6 +34,51 @@ limit = 5
 keywords = ["quantum", "light", "engine", "thermodynamics"]
 
 [[cases]]
+id = "mdn-array-map"
+kind = "search"
+query = "MDN Array.prototype.map JavaScript"
+limit = 5
+expected_urls = ["https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/map"]
+expected_domains = ["developer.mozilla.org"]
+keywords = ["Array.prototype.map", "JavaScript", "MDN"]
+
+[[cases]]
+id = "rust-vec-docs"
+kind = "search"
+query = "Rust std Vec documentation"
+limit = 5
+expected_urls = ["https://doc.rust-lang.org/std/vec/struct.Vec.html"]
+expected_domains = ["doc.rust-lang.org"]
+keywords = ["Rust", "Vec", "std"]
+
+[[cases]]
+id = "github-ripgrep"
+kind = "search"
+query = "GitHub ripgrep BurntSushi"
+limit = 5
+expected_urls = ["https://github.com/BurntSushi/ripgrep"]
+expected_domains = ["github.com"]
+keywords = ["ripgrep", "BurntSushi", "GitHub"]
+
+[[cases]]
+id = "ietf-rfc-9110"
+kind = "search"
+query = "RFC 9110 HTTP Semantics"
+limit = 5
+expected_urls = ["https://www.rfc-editor.org/rfc/rfc9110.html"]
+expected_domains = ["rfc-editor.org"]
+keywords = ["RFC 9110", "HTTP", "Semantics"]
+
+[[cases]]
+id = "arxiv-attention-is-all-you-need"
+kind = "search"
+query = "arXiv Attention Is All You Need 1706.03762"
+limit = 5
+expected_urls = ["https://arxiv.org/abs/1706.03762"]
+expected_domains = ["arxiv.org"]
+keywords = ["Attention Is All You Need", "arXiv", "1706.03762"]
+
+[[cases]]
 id = "kernel-org-read"
 kind = "read"
 url = "https://www.kernel.org/"
@@ -50,6 +95,30 @@ min_chars = 5000
 keywords = ["artificial intelligence", "machine", "intelligence"]
 
 [[cases]]
+id = "mdn-array-map-read"
+kind = "read"
+url = "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/map"
+max_chars = 16000
+min_chars = 4000
+keywords = ["Array.prototype.map", "callbackFn", "JavaScript"]
+
+[[cases]]
+id = "rust-vec-docs-read"
+kind = "read"
+url = "https://doc.rust-lang.org/std/vec/struct.Vec.html"
+max_chars = 16000
+min_chars = 5000
+keywords = ["Vec", "vector", "push"]
+
+[[cases]]
+id = "rfc-9110-read"
+kind = "read"
+url = "https://www.rfc-editor.org/rfc/rfc9110"
+max_chars = 16000
+min_chars = 5000
+keywords = ["HTTP", "Semantics", "RFC 9110"]
+
+[[cases]]
 id = "tnw-full"
 kind = "full"
 query = "site:thenextweb.com/news speed no longer selling point AI agents caution"
@@ -58,3 +127,13 @@ max_chars = 8000
 expected_urls = ["https://thenextweb.com/news/speed-not-selling-point-ai-agents-caution"]
 expected_domains = ["thenextweb.com"]
 keywords = ["AI agents", "speed", "caution"]
+
+[[cases]]
+id = "mdn-array-map-full"
+kind = "full"
+query = "MDN Array.prototype.map JavaScript"
+limit = 3
+max_chars = 8000
+expected_urls = ["https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/map"]
+expected_domains = ["developer.mozilla.org"]
+keywords = ["Array.prototype.map", "callbackFn", "JavaScript"]
