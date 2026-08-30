@@ -32,6 +32,7 @@ chrome-agent-search text 'https://example.com/page' --selector article
 chrome-agent-search search 'query' --limit 5
 chrome-agent-search full 'query' --limit 3 --max-chars 8000 --concurrency 3
 chrome-agent-search bench --cases benchmarks/cases.toml --concurrency 3
+chrome-agent-search cleanup --purge-orphans
 ```
 
 Use JSON output:
@@ -59,6 +60,17 @@ chrome-agent-search --headed --connect http://127.0.0.1:9222 read 'https://examp
 chrome-agent-search --chrome-timeout 20 --command-timeout 30 --wait-timeout 5 search 'query'
 chrome-agent-search full 'query' --read-timeout 20 --concurrency 3
 ```
+
+Clean up managed browser sessions and profiles through `chrome-agent close`:
+
+```sh
+chrome-agent-search cleanup
+chrome-agent-search cleanup --purge
+chrome-agent-search cleanup --orphans
+chrome-agent-search cleanup --purge-orphans
+```
+
+`--purge` deletes cookies/cache/profile data for the selected browser names.
 
 ## Benchmarks
 
