@@ -181,14 +181,24 @@ fn diagnose_hint(
 pub(crate) fn read_url(cli: &Cli, url: &str, max_chars: usize) -> Result<TimedText> {
     let page = page_name("read", url);
     let (_goto_text, goto_seconds) = goto(cli, &page, url)?;
+    read_page(cli, url, &page, max_chars, goto_seconds)
+}
+
+pub(crate) fn read_page(
+    cli: &Cli,
+    url: &str,
+    page: &str,
+    max_chars: usize,
+    goto_seconds: f64,
+) -> Result<TimedText> {
     let start = Instant::now();
-    let mut cmd = chrome_base(cli, &page);
+    let mut cmd = chrome_base(cli, page);
     cmd.arg("read").arg("--truncate").arg(max_chars.to_string());
     let text = run_cmd(cmd, cli.command_timeout).map_err(improve_read_error)?;
     Ok(TimedText {
         ok: true,
         url: url.to_string(),
-        page,
+        page: page.to_string(),
         goto_seconds,
         read_seconds: start.elapsed().as_secs_f64(),
         text_chars: text.len(),
@@ -215,8 +225,19 @@ pub(crate) fn text_url(
 ) -> Result<TimedText> {
     let page = page_name("text", url);
     let (_goto_text, goto_seconds) = goto(cli, &page, url)?;
+    text_page(cli, url, &page, selector, max_chars, goto_seconds)
+}
+
+pub(crate) fn text_page(
+    cli: &Cli,
+    url: &str,
+    page: &str,
+    selector: &str,
+    max_chars: usize,
+    goto_seconds: f64,
+) -> Result<TimedText> {
     let start = Instant::now();
-    let mut cmd = chrome_base(cli, &page);
+    let mut cmd = chrome_base(cli, page);
     cmd.arg("text")
         .arg("--selector")
         .arg(selector)
@@ -226,7 +247,7 @@ pub(crate) fn text_url(
     Ok(TimedText {
         ok: true,
         url: url.to_string(),
-        page,
+        page: page.to_string(),
         goto_seconds,
         read_seconds: start.elapsed().as_secs_f64(),
         text_chars: text.len(),

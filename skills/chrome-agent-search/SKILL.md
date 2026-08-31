@@ -3,7 +3,7 @@ name: chrome-agent-search
 description: Local-first web search and page reading through chrome-agent. Use for search queries, reading URLs, extracting visible text, full search with page content, and diagnosing blocked/login/challenge pages.
 metadata:
   author: ominiverdi
-  version: "0.1.0"
+  version: "0.2.0"
   tags: ["search", "web", "reading", "chrome", "local-first"]
 ---
 
@@ -44,6 +44,8 @@ Use full search when the task needs both discovery and page content:
 ```bash
 chrome-agent-search --json full 'query' --limit 3 --max-chars 8000 --concurrency 3
 ```
+
+`full` uses Readability first and then retries failed pages with visible text from `main`. JSON results identify the successful path as `readability` or `text_main_fallback` in `fetch_method`.
 
 Extract visible text from a page or container when Readability is not appropriate:
 

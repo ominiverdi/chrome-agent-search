@@ -7,6 +7,7 @@ It is a pure command-line tool. No MCP server is embedded.
 ## Features
 
 - Read pages through Chrome Readability.
+- Fall back to visible `main` text during full searches when Readability fails.
 - Extract visible text from a CSS selector.
 - Search with optional local SearXNG, Bing browser form flow, Brave, and DuckDuckGo Lite.
 - Use fast adaptive auto search, with exhaustive merged search available as `--engine all`.

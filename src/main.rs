@@ -21,6 +21,7 @@ use search::search;
 #[derive(Parser, Debug, Clone)]
 #[command(name = "chrome-agent-search")]
 #[command(about = "Search and read web pages through chrome-agent")]
+#[command(version)]
 pub(crate) struct Cli {
     #[command(subcommand)]
     command: Commands,

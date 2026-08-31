@@ -50,6 +50,8 @@ pub(crate) struct FullResult {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) sources: Vec<String>,
     pub(crate) fetch_status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) fetch_method: Option<String>,
     pub(crate) content: Option<String>,
     pub(crate) error: Option<String>,
 }

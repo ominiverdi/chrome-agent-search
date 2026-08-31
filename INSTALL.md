@@ -26,6 +26,7 @@ Verify:
 
 ```sh
 chrome-agent --version
+chrome-agent-search --version
 chrome-agent-search --help
 ```
 
