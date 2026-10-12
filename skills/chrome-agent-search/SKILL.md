@@ -3,7 +3,7 @@ name: chrome-agent-search
 description: Local-first web search and page reading through chrome-agent. Use for search queries, reading URLs, extracting visible text, full search with page content, and diagnosing blocked/login/challenge pages.
 metadata:
   author: ominiverdi
-  version: "0.2.0"
+  version: "0.2.1"
   tags: ["search", "web", "reading", "chrome", "local-first"]
 ---
 
