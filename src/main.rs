@@ -32,6 +32,10 @@ pub(crate) struct Cli {
     #[arg(long, default_value = "default", global = true)]
     pub(crate) browser: String,
 
+    /// Repeatable Chrome launch option; requires chrome-agent >= 0.14.0.
+    #[arg(long, global = true, allow_hyphen_values = true)]
+    pub(crate) chrome_arg: Vec<String>,
+
     #[arg(long, global = true)]
     pub(crate) stealth: bool,
 
@@ -203,4 +207,48 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    #[test]
+    fn chrome_args_are_repeatable_and_forwarded_without_splitting() {
+        let cli = Cli::try_parse_from([
+            "chrome-agent-search",
+            "--chrome-arg",
+            "--disable-dev-shm-usage",
+            "--chrome-arg=--lang=en-US",
+            "read",
+            "https://example.com",
+        ])
+        .unwrap();
+        assert_eq!(cli.chrome_arg, ["--disable-dev-shm-usage", "--lang=en-US"]);
+        let cmd = chrome::chrome_base(&cli, "test");
+        let args: Vec<_> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            args.windows(2)
+                .any(|a| a == ["--chrome-arg", "--disable-dev-shm-usage"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|a| a == ["--chrome-arg", "--lang=en-US"])
+        );
+    }
+
+    #[test]
+    fn default_does_not_add_chrome_launch_flags() {
+        let cli =
+            Cli::try_parse_from(["chrome-agent-search", "read", "https://example.com"]).unwrap();
+        assert!(cli.chrome_arg.is_empty());
+        assert!(
+            !chrome::chrome_base(&cli, "test")
+                .get_args()
+                .any(|a| a == "--chrome-arg")
+        );
+    }
 }

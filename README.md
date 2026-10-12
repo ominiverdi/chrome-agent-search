@@ -112,3 +112,13 @@ See [`BENCHMARKS.md`](BENCHMARKS.md) for methodology, comparison details, and ca
 ## Agent skill
 
 Agent instructions live in [`skills/chrome-agent-search/SKILL.md`](skills/chrome-agent-search/SKILL.md).
+
+## Extra Chrome launch options
+
+Pass repeatable launch options through to chrome-agent (requires chrome-agent >= 0.14.0):
+
+```sh
+chrome-agent-search --browser research --chrome-arg=--disable-dev-shm-usage read https://example.com
+```
+
+No extra flags are added by default. Upstream validates flags and refuses conflicts with an already-running browser. Close that browser or use a new name before changing its launch flags. This option is also forwarded during cleanup.

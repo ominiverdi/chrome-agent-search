@@ -46,6 +46,9 @@ fn cleanup_browser_names(base: &str) -> Vec<String> {
 fn chrome_close_base(cli: &Cli, browser: &str) -> Command {
     let mut cmd = Command::new(&cli.chrome_agent);
     cmd.arg("--browser").arg(browser);
+    for arg in &cli.chrome_arg {
+        cmd.arg("--chrome-arg").arg(arg);
+    }
     if cli.stealth {
         cmd.arg("--stealth");
     }

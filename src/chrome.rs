@@ -25,6 +25,9 @@ fn chrome_base_inner(cli: &Cli, page: &str, stealth: bool) -> Command {
         .arg(page)
         .arg("--timeout")
         .arg(cli.chrome_timeout.to_string());
+    for arg in &cli.chrome_arg {
+        cmd.arg("--chrome-arg").arg(arg);
+    }
     if stealth {
         cmd.arg("--stealth");
     }
